@@ -895,42 +895,48 @@ const DBC = (function() {
       return new Blob(parts, { type: 'text/markdown' });
     }
 
-    // XLSX: Use aoa_to_sheet with pre-built array (avoids spread operator)
+    // XLSX: Build worksheet incrementally using sheet_add_aoa
     if (fmt === 'xlsx') {
-      // XLSX has a limit of 1,048,576 rows
+      // XLSX has a limit of 1,048,576 rows (plus header)
       if (totalRows > 1048575) {
         throw new Error('XLSX format limited to 1,048,575 rows. Use CSV for larger datasets.');
       }
 
-      onProgress(10, 'Building XLSX data array...');
-      await yieldToUI();
-
-      // Build the AOA (array of arrays) incrementally
-      const aoa = [headers];
-
-      for (let i = 0; i < totalRows; i += chunkSize) {
-        const end = Math.min(i + chunkSize, totalRows);
-        for (let ri = i; ri < end; ri++) {
-          aoa.push(rows[ri]);
-        }
-        onProgress(10 + Math.round((i / totalRows) * 50), `Preparing rows ${i + 1}-${end} of ${totalRows}...`);
-        await yieldToUI();
+      // For very large datasets, recommend CSV
+      if (totalRows > 200000) {
+        throw new Error('XLSX with ' + totalRows.toLocaleString() + ' rows may cause browser memory issues. Use CSV format for datasets over 200K rows.');
       }
 
-      onProgress(65, 'Creating XLSX worksheet...');
+      onProgress(5, 'Creating XLSX worksheet...');
       await yieldToUI();
 
-      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      // Create worksheet with headers first
+      const ws = XLSX.utils.aoa_to_sheet([headers]);
+
+      // Add data in chunks using sheet_add_aoa (starts at row 1, after header)
+      const xlsxChunkSize = Math.min(chunkSize, 2000); // Smaller chunks for XLSX
+
+      for (let i = 0; i < totalRows; i += xlsxChunkSize) {
+        const end = Math.min(i + xlsxChunkSize, totalRows);
+        const chunk = rows.slice(i, end);
+
+        // sheet_add_aoa appends at specified origin
+        XLSX.utils.sheet_add_aoa(ws, chunk, { origin: i + 1 }); // +1 because row 0 is headers
+
+        onProgress(5 + Math.round((i / totalRows) * 70), `Adding rows ${i + 1}-${end} of ${totalRows}...`);
+        await yieldToUI();
+      }
 
       onProgress(80, 'Generating XLSX file...');
       await yieldToUI();
 
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
-      const b = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
 
-      // Clear aoa to free memory
-      aoa.length = 0;
+      onProgress(90, 'Compressing XLSX...');
+      await yieldToUI();
+
+      const b = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
 
       return new Blob([b], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     }
