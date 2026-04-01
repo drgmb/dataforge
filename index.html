@@ -251,6 +251,29 @@
     font-size: 11px;
     color: var(--text-muted);
   }
+  .progress-container {
+    margin-top: 16px;
+    display: none;
+  }
+  .progress-container.visible { display: block; }
+  .progress-bar {
+    height: 6px;
+    background: #eee;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    background: var(--accent);
+    width: 0%;
+    transition: width 0.1s;
+  }
+  .progress-text {
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--text-dim);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
   .results { margin-top: 16px; display: flex; flex-direction: column; gap: 4px; }
   .result-item {
     display: flex;
@@ -263,6 +286,7 @@
   }
   .result-item.success { color: var(--success); }
   .result-item.error { color: var(--error); }
+  .result-item.info { color: var(--text-dim); }
   .result-icon { flex-shrink: 0; }
   .result-from { color: var(--text-dim); }
   .result-arrow { color: var(--text-muted); font-size: 10px; }
@@ -275,6 +299,44 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .test-section {
+    margin-top: 24px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+  }
+  .test-section summary {
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .test-section summary:hover { color: var(--text-dim); }
+  .test-controls {
+    margin-top: 12px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .test-btn {
+    padding: 6px 12px;
+    font-size: 11px;
+    background: #f5f5f5;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  .test-btn:hover { background: #eee; }
+  .test-results {
+    margin-top: 12px;
+    padding: 10px;
+    background: #f9f9f9;
+    border-radius: 4px;
+    font-size: 11px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+    max-height: 200px;
+    overflow-y: auto;
   }
   footer {
     text-align: center;
@@ -353,7 +415,26 @@
     <p class="merge-note">A "_source_file" column will be added to identify each row's origin.</p>
   </div>
 
+  <div class="progress-container" id="progressContainer">
+    <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+    <div class="progress-text" id="progressText">Processing...</div>
+  </div>
+
   <div class="results" id="results"></div>
+
+  <details class="test-section">
+    <summary>Performance Tests</summary>
+    <div class="test-controls">
+      <button class="test-btn" data-rows="1000">Test 1K rows</button>
+      <button class="test-btn" data-rows="10000">Test 10K rows</button>
+      <button class="test-btn" data-rows="50000">Test 50K rows</button>
+      <button class="test-btn" data-rows="100000">Test 100K rows</button>
+      <button class="test-btn" data-rows="300000">Test 300K rows</button>
+      <button class="test-btn" data-rows="500000">Test 500K rows</button>
+      <button class="test-btn" data-rows="1000000">Test 1M rows</button>
+    </div>
+    <div class="test-results" id="testResults">Click a test button to run performance tests.</div>
+  </details>
 </div>
 
 <footer>
@@ -362,335 +443,100 @@
 
 <script>
 // ═══════════════════════════════════════════════════════════════════
-// BLAST DECOMPRESSOR — Faithful port of Mark Adler's blast.c v1.2
-// PKWare Data Compression Library (DCL Implode) decompressor
-// Used by DATASUS .dbc files
+// PROCESSING TIERS - Automatic scaling based on data volume
+// ═══════════════════════════════════════════════════════════════════
+//
+// Tier 1: DIRECT (< 50K rows)
+//   - Simple synchronous processing
+//   - Fast, no overhead
+//
+// Tier 2: CHUNKED (50K - 200K rows)
+//   - Process in chunks of 10K rows
+//   - Yield to UI between chunks (setTimeout)
+//   - Progress bar updates
+//
+// Tier 3: STREAMING (200K - 1M rows)
+//   - Generate output in parts, concat to Blob
+//   - Never hold full string in memory
+//   - Chunked processing with smaller batches
+//
+// Tier 4: FILE_SYSTEM (> 1M rows, Chrome/Edge only)
+//   - Use File System Access API
+//   - Stream directly to disk
+//   - Fallback to Tier 3 with warning on other browsers
+//
+// ═══════════════════════════════════════════════════════════════════
+
+const ProcessingTier = {
+  DIRECT: { name: 'Direct', maxRows: 50000, chunkSize: null },
+  CHUNKED: { name: 'Chunked', maxRows: 200000, chunkSize: 10000 },
+  STREAMING: { name: 'Streaming', maxRows: 1000000, chunkSize: 5000 },
+  FILE_SYSTEM: { name: 'FileSystem', maxRows: Infinity, chunkSize: 5000 }
+};
+
+function getTier(rowCount) {
+  if (rowCount <= ProcessingTier.DIRECT.maxRows) return ProcessingTier.DIRECT;
+  if (rowCount <= ProcessingTier.CHUNKED.maxRows) return ProcessingTier.CHUNKED;
+  if (rowCount <= ProcessingTier.STREAMING.maxRows) return ProcessingTier.STREAMING;
+  return ProcessingTier.FILE_SYSTEM;
+}
+
+function supportsFileSystemAPI() {
+  return 'showSaveFilePicker' in window;
+}
+
+// Yield to UI
+function yieldToUI() {
+  return new Promise(resolve => setTimeout(resolve, 0));
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// BLAST DECOMPRESSOR
 // ═══════════════════════════════════════════════════════════════════
 const Blast = (function() {
   'use strict';
+  const MAXBITS = 13, MAXWIN = 4096;
+  const BASE = [3,2,4,5,6,7,8,9,10,12,16,24,40,72,136,264];
+  const EXTRA = [0,0,0,0,0,0,0,0,1,2,3,4,5,6,7,8];
+  const LITLEN_COMPACT = [11,124,8,7,28,7,188,13,76,4,10,8,12,10,12,10,8,23,8,9,7,6,7,8,7,6,55,8,23,24,12,11,7,9,11,12,6,7,22,5,7,24,6,11,9,6,7,22,7,11,38,7,9,8,25,11,8,11,9,12,8,12,5,38,5,38,5,11,7,5,6,21,6,10,53,8,7,24,10,27,44,253,253,253,252,252,252,13,12,45,12,45,12,61,12,45,44,173];
+  const LENLEN_COMPACT = [2,35,36,53,38,23];
+  const DISTLEN_COMPACT = [2,20,53,230,247,151,248];
 
-  const MAXBITS = 13;
-  const MAXWIN  = 4096;
-
-  const BASE  = [3,2,4,5,6,7,8,9,10,12,16,24,40,72,136,264];
-  const EXTRA = [0,0,0,0,0,0,0,0, 1, 2, 3, 4, 5, 6,  7,  8];
-
-  const LITLEN_COMPACT = [
-    11,124,8,7,28,7,188,13,76,4,10,8,12,10,12,10,8,23,8,
-    9,7,6,7,8,7,6,55,8,23,24,12,11,7,9,11,12,6,7,22,5,
-    7,24,6,11,9,6,7,22,7,11,38,7,9,8,25,11,8,11,9,12,
-    8,12,5,38,5,38,5,11,7,5,6,21,6,10,53,8,7,24,10,27,
-    44,253,253,253,252,252,252,13,12,45,12,45,12,61,12,45,
-    44,173
-  ];
-  const LENLEN_COMPACT  = [2, 35, 36, 53, 38, 23];
-  const DISTLEN_COMPACT = [2, 20, 53, 230, 247, 151, 248];
-
-  function expand(compact) {
-    const out = [];
-    for (const b of compact) {
-      const cnt = (b >> 4) + 1;
-      const len = b & 0x0F;
-      for (let i = 0; i < cnt; i++) out.push(len);
-    }
-    return out;
-  }
-
+  function expand(c) { const o=[]; for(const b of c){const cnt=(b>>4)+1,len=b&0x0F;for(let i=0;i<cnt;i++)o.push(len);} return o; }
   function construct(lengths) {
-    const n = lengths.length;
-    const count  = new Int32Array(MAXBITS + 1);
-    const symbol = new Int32Array(n);
-
-    for (let i = 0; i < n; i++) count[lengths[i]]++;
-
-    const offs = new Int32Array(MAXBITS + 1);
-    for (let i = 1; i < MAXBITS; i++) offs[i + 1] = offs[i] + count[i];
-
-    for (let sym = 0; sym < n; sym++)
-      if (lengths[sym] !== 0) symbol[offs[lengths[sym]]++] = sym;
-
-    return { count, symbol };
+    const n=lengths.length,count=new Int32Array(MAXBITS+1),symbol=new Int32Array(n);
+    for(let i=0;i<n;i++)count[lengths[i]]++;
+    const offs=new Int32Array(MAXBITS+1);
+    for(let i=1;i<MAXBITS;i++)offs[i+1]=offs[i]+count[i];
+    for(let sym=0;sym<n;sym++)if(lengths[sym]!==0)symbol[offs[lengths[sym]]++]=sym;
+    return {count,symbol};
   }
-
-  const litcode  = construct(expand(LITLEN_COMPACT));
-  const lencode  = construct(expand(LENLEN_COMPACT));
-  const distcode = construct(expand(DISTLEN_COMPACT));
-
-  function bits(s, need) {
-    let val = s.bitbuf;
-    while (s.bitcnt < need) {
-      if (s.inpos >= s.input.length) throw new Error('Blast: unexpected end of data');
-      val |= s.input[s.inpos++] << s.bitcnt;
-      s.bitcnt += 8;
-    }
-    s.bitbuf = val >> need;
-    s.bitcnt -= need;
-    return val & ((1 << need) - 1);
-  }
-
-  function decode(s, h) {
-    let bitbuf = s.bitbuf;
-    let left   = s.bitcnt;
-    let code = 0, first = 0, index = 0, len = 1;
-    let next = 1;
-
-    while (true) {
-      while (left--) {
-        code |= (bitbuf & 1) ^ 1;
-        bitbuf >>= 1;
-        const cnt = h.count[next++];
-        if (code < first + cnt) {
-          s.bitbuf = bitbuf;
-          s.bitcnt = (s.bitcnt - len) & 7;
-          return h.symbol[index + (code - first)];
-        }
-        index += cnt;
-        first += cnt;
-        first <<= 1;
-        code <<= 1;
-        len++;
-      }
-      left = (MAXBITS + 1) - len;
-      if (left === 0) break;
-      if (s.inpos >= s.input.length) throw new Error('Blast: unexpected end of data');
-      bitbuf = s.input[s.inpos++];
-      if (left > 8) left = 8;
-    }
-    throw new Error('Blast: incomplete Huffman code');
-  }
-
-  function decompress(input) {
-    const s = { input, inpos: 0, bitbuf: 0, bitcnt: 0 };
-
-    const lit  = bits(s, 8);
-    const dict = bits(s, 8);
-    if (lit > 1) throw new Error('Blast: invalid literal flag (' + lit + ')');
-    if (dict < 4 || dict > 6) throw new Error('Blast: invalid dict (' + dict + ')');
-
-    const win = new Uint8Array(MAXWIN);
-    let wnext  = 0;
-    let wfirst = true;
-    const chunks = [];
-
-    function flush() {
-      if (wnext > 0) {
-        chunks.push(win.slice(0, wnext));
-        wnext  = 0;
-        wfirst = false;
-      }
-    }
-
-    while (true) {
-      if (bits(s, 1)) {
-        const sym = decode(s, lencode);
-        const len = BASE[sym] + bits(s, EXTRA[sym]);
-        if (len === 519) break;
-
-        const distBits = len === 2 ? 2 : dict;
-        let dist = decode(s, distcode) << distBits;
-        dist += bits(s, distBits);
-        dist++;
-
-        let remaining = len;
-        do {
-          let from, copy;
-          const to = wnext;
-
-          if (wnext >= dist) {
-            from = wnext - dist;
-            copy = MAXWIN - wnext;
-          } else {
-            from = MAXWIN + wnext - dist;
-            copy = dist - wnext;
-            if (copy > MAXWIN - from) copy = MAXWIN - from;
-          }
-
-          if (copy > remaining) copy = remaining;
-          remaining -= copy;
-          wnext += copy;
-
-          for (let i = 0; i < copy; i++) win[to + i] = win[from + i];
-
-          if (wnext === MAXWIN) flush();
-        } while (remaining > 0);
-      } else {
-        win[wnext++] = lit ? decode(s, litcode) : bits(s, 8);
-        if (wnext === MAXWIN) flush();
-      }
-    }
-
-    flush();
-
-    let total = 0;
-    for (const c of chunks) total += c.length;
-    const result = new Uint8Array(total);
-    let off = 0;
-    for (const c of chunks) { result.set(c, off); off += c.length; }
-    return result;
-  }
-
-  return { decompress };
+  const litcode=construct(expand(LITLEN_COMPACT)),lencode=construct(expand(LENLEN_COMPACT)),distcode=construct(expand(DISTLEN_COMPACT));
+  function bits(s,need){let val=s.bitbuf;while(s.bitcnt<need){if(s.inpos>=s.input.length)throw new Error('Blast: unexpected end');val|=s.input[s.inpos++]<<s.bitcnt;s.bitcnt+=8;}s.bitbuf=val>>need;s.bitcnt-=need;return val&((1<<need)-1);}
+  function decode(s,h){let bitbuf=s.bitbuf,left=s.bitcnt,code=0,first=0,index=0,len=1,next=1;while(true){while(left--){code|=(bitbuf&1)^1;bitbuf>>=1;const cnt=h.count[next++];if(code<first+cnt){s.bitbuf=bitbuf;s.bitcnt=(s.bitcnt-len)&7;return h.symbol[index+(code-first)];}index+=cnt;first+=cnt;first<<=1;code<<=1;len++;}left=(MAXBITS+1)-len;if(left===0)break;if(s.inpos>=s.input.length)throw new Error('Blast: unexpected end');bitbuf=s.input[s.inpos++];if(left>8)left=8;}throw new Error('Blast: incomplete code');}
+  function decompress(input){const s={input,inpos:0,bitbuf:0,bitcnt:0};const lit=bits(s,8),dict=bits(s,8);if(lit>1)throw new Error('Blast: invalid literal');if(dict<4||dict>6)throw new Error('Blast: invalid dict');const win=new Uint8Array(MAXWIN);let wnext=0;const chunks=[];function flush(){if(wnext>0){chunks.push(win.slice(0,wnext));wnext=0;}}while(true){if(bits(s,1)){const sym=decode(s,lencode),len=BASE[sym]+bits(s,EXTRA[sym]);if(len===519)break;const distBits=len===2?2:dict;let dist=decode(s,distcode)<<distBits;dist+=bits(s,distBits);dist++;let rem=len;do{let from,copy;const to=wnext;if(wnext>=dist){from=wnext-dist;copy=MAXWIN-wnext;}else{from=MAXWIN+wnext-dist;copy=dist-wnext;if(copy>MAXWIN-from)copy=MAXWIN-from;}if(copy>rem)copy=rem;rem-=copy;wnext+=copy;for(let i=0;i<copy;i++)win[to+i]=win[from+i];if(wnext===MAXWIN)flush();}while(rem>0);}else{win[wnext++]=lit?decode(s,litcode):bits(s,8);if(wnext===MAXWIN)flush();}}flush();let total=0;for(const c of chunks)total+=c.length;const result=new Uint8Array(total);let off=0;for(const c of chunks){result.set(c,off);off+=c.length;}return result;}
+  return {decompress};
 })();
 
-
 // ═══════════════════════════════════════════════════════════════════
-// DBF PARSER & WRITER — dBase III/IV/V
+// DBF PARSER & WRITER
 // ═══════════════════════════════════════════════════════════════════
 const DBF = (function() {
   'use strict';
-  const dec = new TextDecoder('windows-1252');
-  const enc = new TextEncoder();
-
-  function parse(buf) {
-    const d = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
-    const v = new DataView(d.buffer, d.byteOffset, d.byteLength);
-    if (d.length < 32) throw new Error('DBF: file too small');
-
-    const numRec   = v.getUint32(4, true);
-    const hdrLen   = v.getUint16(8, true);
-    const recLen   = v.getUint16(10, true);
-
-    const fields = [];
-    let off = 32;
-    while (off + 32 <= hdrLen && d[off] !== 0x0D) {
-      let ne = off;
-      while (ne < off + 11 && d[ne] !== 0) ne++;
-      const name = dec.decode(d.slice(off, ne)).trim();
-      const type = String.fromCharCode(d[off + 11]);
-      const flen = d[off + 16];
-      const fdec = d[off + 17];
-      if (name && flen > 0) fields.push({ name, type, length: flen, decimal: fdec });
-      off += 32;
-    }
-    if (fields.length === 0) throw new Error('DBF: no fields found');
-
-    const records = [];
-    let roff = hdrLen;
-    const max = Math.min(numRec, 10_000_000);
-
-    for (let r = 0; r < max; r++) {
-      if (roff + 1 > d.length) break;
-      const flag = d[roff];
-      if (flag === 0x1A) break;
-      roff++;
-
-      if (flag === 0x2A) { roff += recLen - 1; continue; }
-
-      const rec = {};
-      for (const f of fields) {
-        if (roff + f.length > d.length) { roff = d.length; break; }
-        const raw = dec.decode(d.slice(roff, roff + f.length)).trim();
-        roff += f.length;
-        switch (f.type) {
-          case 'N': case 'F':
-            if (raw === '' || /^\*+$/.test(raw)) rec[f.name] = null;
-            else { const n = parseFloat(raw); rec[f.name] = isNaN(n) ? raw : n; }
-            break;
-          case 'L':
-            rec[f.name] = 'TtYy1'.includes(raw) ? true : 'FfNn0'.includes(raw) ? false : null;
-            break;
-          case 'D':
-            rec[f.name] = (raw.length === 8 && raw.trim()) ?
-              raw.slice(0,4)+'-'+raw.slice(4,6)+'-'+raw.slice(6,8) : (raw || null);
-            break;
-          default:
-            rec[f.name] = raw;
-        }
-      }
-      records.push(rec);
-    }
-    return { fields, records };
-  }
-
-  function write(records) {
-    if (!records || !records.length) throw new Error('DBF: no records');
-
-    const keys = []; const ks = new Set();
-    for (const r of records) for (const k of Object.keys(r)) { if (!ks.has(k)) { ks.add(k); keys.push(k); } }
-
-    const fields = keys.map(name => {
-      let ml = 1, allN = true, maxD = 0;
-      for (const r of records) {
-        const v = r[name]; if (v == null || v === '') continue;
-        const s = String(v), bl = enc.encode(s).length;
-        if (bl > ml) ml = bl;
-        if (allN && isNaN(Number(v))) allN = false;
-        if (allN && s.includes('.')) { const dd = (s.split('.')[1]||'').length; if (dd > maxD) maxD = dd; }
-      }
-      if (allN && ml <= 18) return { name: name.slice(0,10), type: 'N', length: Math.min(Math.max(ml, maxD+2, 1), 18), decimal: Math.min(maxD, 15), src: name };
-      return { name: name.slice(0,10), type: 'C', length: Math.min(Math.max(ml,1), 254), decimal: 0, src: name };
-    });
-
-    const hLen = 32 + fields.length * 32 + 1;
-    const rLen = 1 + fields.reduce((s, f) => s + f.length, 0);
-    const buf = new Uint8Array(hLen + records.length * rLen + 1);
-    const dv = new DataView(buf.buffer);
-    const now = new Date();
-    buf[0] = 0x03; buf[1] = now.getFullYear()-1900; buf[2] = now.getMonth()+1; buf[3] = now.getDate();
-    dv.setUint32(4, records.length, true);
-    dv.setUint16(8, hLen, true);
-    dv.setUint16(10, rLen, true);
-
-    let o = 32;
-    for (const f of fields) { buf.set(enc.encode(f.name).slice(0,11), o); buf[o+11]=f.type.charCodeAt(0); buf[o+16]=f.length; buf[o+17]=f.decimal; o+=32; }
-    buf[o] = 0x0D;
-
-    let ro = hLen;
-    for (const rec of records) {
-      buf[ro++] = 0x20;
-      for (const f of fields) {
-        let v = rec[f.src]; if (v == null) v = '';
-        let s = String(v);
-        s = f.type === 'N' ? s.slice(0,f.length).padStart(f.length,' ') : s.slice(0,f.length).padEnd(f.length,' ');
-        const bytes = enc.encode(s);
-        for (let i = 0; i < f.length; i++) buf[ro+i] = i < bytes.length ? bytes[i] : 0x20;
-        ro += f.length;
-      }
-    }
-    buf[ro] = 0x1A;
-    return buf;
-  }
-
-  return { parse, write };
+  const dec=new TextDecoder('windows-1252'),enc=new TextEncoder();
+  function parse(buf){const d=buf instanceof Uint8Array?buf:new Uint8Array(buf);const v=new DataView(d.buffer,d.byteOffset,d.byteLength);if(d.length<32)throw new Error('DBF: file too small');const numRec=v.getUint32(4,true),hdrLen=v.getUint16(8,true),recLen=v.getUint16(10,true);const fields=[];let off=32;while(off+32<=hdrLen&&d[off]!==0x0D){let ne=off;while(ne<off+11&&d[ne]!==0)ne++;const name=dec.decode(d.slice(off,ne)).trim(),type=String.fromCharCode(d[off+11]),flen=d[off+16],fdec=d[off+17];if(name&&flen>0)fields.push({name,type,length:flen,decimal:fdec});off+=32;}if(fields.length===0)throw new Error('DBF: no fields');const records=[];let roff=hdrLen;const max=Math.min(numRec,10000000);for(let r=0;r<max;r++){if(roff+1>d.length)break;const flag=d[roff];if(flag===0x1A)break;roff++;if(flag===0x2A){roff+=recLen-1;continue;}const rec={};for(const f of fields){if(roff+f.length>d.length){roff=d.length;break;}const raw=dec.decode(d.slice(roff,roff+f.length)).trim();roff+=f.length;switch(f.type){case'N':case'F':if(raw===''||/^\*+$/.test(raw))rec[f.name]=null;else{const n=parseFloat(raw);rec[f.name]=isNaN(n)?raw:n;}break;case'L':rec[f.name]='TtYy1'.includes(raw)?true:'FfNn0'.includes(raw)?false:null;break;case'D':rec[f.name]=(raw.length===8&&raw.trim())?raw.slice(0,4)+'-'+raw.slice(4,6)+'-'+raw.slice(6,8):(raw||null);break;default:rec[f.name]=raw;}}records.push(rec);}return{fields,records};}
+  function write(records){if(!records||!records.length)throw new Error('DBF: no records');const keys=[],ks=new Set();for(const r of records)for(const k of Object.keys(r))if(!ks.has(k)){ks.add(k);keys.push(k);}const fields=keys.map(name=>{let ml=1,allN=true,maxD=0;for(const r of records){const v=r[name];if(v==null||v==='')continue;const s=String(v),bl=enc.encode(s).length;if(bl>ml)ml=bl;if(allN&&isNaN(Number(v)))allN=false;if(allN&&s.includes('.')){const dd=(s.split('.')[1]||'').length;if(dd>maxD)maxD=dd;}}if(allN&&ml<=18)return{name:name.slice(0,10),type:'N',length:Math.min(Math.max(ml,maxD+2,1),18),decimal:Math.min(maxD,15),src:name};return{name:name.slice(0,10),type:'C',length:Math.min(Math.max(ml,1),254),decimal:0,src:name};});const hLen=32+fields.length*32+1,rLen=1+fields.reduce((s,f)=>s+f.length,0);const buf=new Uint8Array(hLen+records.length*rLen+1),dv=new DataView(buf.buffer);const now=new Date();buf[0]=0x03;buf[1]=now.getFullYear()-1900;buf[2]=now.getMonth()+1;buf[3]=now.getDate();dv.setUint32(4,records.length,true);dv.setUint16(8,hLen,true);dv.setUint16(10,rLen,true);let o=32;for(const f of fields){buf.set(enc.encode(f.name).slice(0,11),o);buf[o+11]=f.type.charCodeAt(0);buf[o+16]=f.length;buf[o+17]=f.decimal;o+=32;}buf[o]=0x0D;let ro=hLen;for(const rec of records){buf[ro++]=0x20;for(const f of fields){let v=rec[f.src];if(v==null)v='';let s=String(v);s=f.type==='N'?s.slice(0,f.length).padStart(f.length,' '):s.slice(0,f.length).padEnd(f.length,' ');const bytes=enc.encode(s);for(let i=0;i<f.length;i++)buf[ro+i]=i<bytes.length?bytes[i]:0x20;ro+=f.length;}}buf[ro]=0x1A;return buf;}
+  return {parse,write};
 })();
 
-
 // ═══════════════════════════════════════════════════════════════════
-// DBC (DATASUS) — DBF header (plain) + 4-byte CRC32 + Blast-compressed records
+// DBC (DATASUS)
 // ═══════════════════════════════════════════════════════════════════
 const DBC = (function() {
   'use strict';
-
-  function parse(data) {
-    const buf = data instanceof Uint8Array ? data : new Uint8Array(data);
-    if (buf.length < 32) throw new Error('DBC: file too small');
-
-    const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-    const headerLen = view.getUint16(8, true);
-
-    if (headerLen < 32 || headerLen > buf.length - 4) {
-      throw new Error('DBC: invalid header length (' + headerLen + ')');
-    }
-
-    const compressedStart = headerLen + 4;
-    if (compressedStart >= buf.length) {
-      throw new Error('DBC: no compressed data after header');
-    }
-
-    const compressed = buf.slice(compressedStart);
-    const decompressed = Blast.decompress(compressed);
-
-    const header = buf.slice(0, headerLen);
-    const dbfBuf = new Uint8Array(header.length + decompressed.length);
-    dbfBuf.set(header);
-    dbfBuf.set(decompressed, header.length);
-
-    return DBF.parse(dbfBuf);
-  }
-
-  return { parse };
+  function parse(data){const buf=data instanceof Uint8Array?data:new Uint8Array(data);if(buf.length<32)throw new Error('DBC: file too small');const view=new DataView(buf.buffer,buf.byteOffset,buf.byteLength),headerLen=view.getUint16(8,true);if(headerLen<32||headerLen>buf.length-4)throw new Error('DBC: invalid header');const compressedStart=headerLen+4;if(compressedStart>=buf.length)throw new Error('DBC: no compressed data');const compressed=buf.slice(compressedStart),decompressed=Blast.decompress(compressed),header=buf.slice(0,headerLen),dbfBuf=new Uint8Array(header.length+decompressed.length);dbfBuf.set(header);dbfBuf.set(decompressed,header.length);return DBF.parse(dbfBuf);}
+  return {parse};
 })();
-
 
 // ═══════════════════════════════════════════════════════════════════
 // MAIN APPLICATION
@@ -699,8 +545,8 @@ const DBC = (function() {
   'use strict';
 
   let files = [];
-  let parsedFiles = []; // { file, headers, objRows }
-  let mergeMapping = []; // [{ outputCol, sources: { fileName: colName } }]
+  let parsedFiles = [];
+  let mergeMapping = [];
 
   const MAX = 100 * 1024 * 1024;
   const SUP = new Set(['csv','tsv','xlsx','xls','json','jsonl','xml','ods','txt','dbf','dbc']);
@@ -714,105 +560,54 @@ const DBC = (function() {
   const mergeToggle = $('mergeToggle'), mergePanel = $('mergePanel');
   const mergeTableHead = $('mergeTableHead'), mergeTableBody = $('mergeTableBody');
   const mergeAddCol = $('mergeAddCol');
+  const progressContainer = $('progressContainer'), progressFill = $('progressFill'), progressText = $('progressText');
+  const testResults = $('testResults');
 
   const fmtB = b => b < 1024 ? b+' B' : b < 1048576 ? (b/1024).toFixed(1)+' KB' : (b/1048576).toFixed(1)+' MB';
-  const ext  = n => (n.split('.').pop()||'').toLowerCase();
+  const ext = n => (n.split('.').pop()||'').toLowerCase();
   const base = n => { const p = n.split('.'); p.pop(); return p.join('.')||n; };
 
-  // ── Column matching utilities ──
-  function norm(name) {
-    return name
-      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-      .replace(/([a-z])([A-Z])/g, '$1_$2')
-      .replace(/[-\s_.]+/g, '')
-      .toLowerCase();
+  // ── Progress helpers ──
+  function showProgress(pct, text) {
+    progressContainer.classList.add('visible');
+    progressFill.style.width = pct + '%';
+    progressText.textContent = text;
+  }
+  function hideProgress() {
+    progressContainer.classList.remove('visible');
   }
 
+  // ── Column matching ──
+  function norm(name) {
+    return name.normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/([a-z])([A-Z])/g,'$1_$2').replace(/[-\s_.]+/g,'').toLowerCase();
+  }
   function dice(a, b) {
     if (a.length < 2 || b.length < 2) return a === b ? 1 : 0;
-    const bg = s => {
-      const map = new Map();
-      for (let i = 0; i < s.length - 1; i++) {
-        const bigram = s.slice(i, i + 2);
-        map.set(bigram, (map.get(bigram) || 0) + 1);
-      }
-      return map;
-    };
-    const A = bg(a), B = bg(b);
-    let inter = 0;
+    const bg = s => { const m = new Map(); for (let i = 0; i < s.length - 1; i++) { const g = s.slice(i, i + 2); m.set(g, (m.get(g) || 0) + 1); } return m; };
+    const A = bg(a), B = bg(b); let inter = 0;
     for (const [k, v] of A) inter += Math.min(v, B.get(k) || 0);
     const total = a.length + b.length - 2;
     return total === 0 ? 0 : (2 * inter) / total;
   }
-
   function autoMatch(filesData) {
-    // Collect all columns: [{ fileIdx, fileName, colName, normName }]
     const allCols = [];
-    filesData.forEach((fd, fi) => {
-      fd.headers.forEach(col => {
-        allCols.push({ fileIdx: fi, fileName: fd.file.name, colName: col, normName: norm(col) });
-      });
-    });
-
-    // Union-Find for grouping
+    filesData.forEach((fd, fi) => { fd.headers.forEach(col => { allCols.push({ fileIdx: fi, fileName: fd.file.name, colName: col, normName: norm(col) }); }); });
     const parent = allCols.map((_, i) => i);
     const find = i => parent[i] === i ? i : (parent[i] = find(parent[i]));
     const union = (i, j) => { parent[find(i)] = find(j); };
-
-    // Pass 1: exact match (case-insensitive)
-    for (let i = 0; i < allCols.length; i++) {
-      for (let j = i + 1; j < allCols.length; j++) {
-        if (allCols[i].fileIdx === allCols[j].fileIdx) continue;
-        if (allCols[i].colName.toLowerCase() === allCols[j].colName.toLowerCase()) {
-          union(i, j);
-        }
-      }
-    }
-
-    // Pass 2: normalized match
-    for (let i = 0; i < allCols.length; i++) {
-      for (let j = i + 1; j < allCols.length; j++) {
-        if (allCols[i].fileIdx === allCols[j].fileIdx) continue;
-        if (find(i) === find(j)) continue;
-        if (allCols[i].normName === allCols[j].normName) {
-          union(i, j);
-        }
-      }
-    }
-
-    // Pass 3: fuzzy match (Dice > 0.8)
-    for (let i = 0; i < allCols.length; i++) {
-      for (let j = i + 1; j < allCols.length; j++) {
-        if (allCols[i].fileIdx === allCols[j].fileIdx) continue;
-        if (find(i) === find(j)) continue;
-        if (dice(allCols[i].normName, allCols[j].normName) > 0.8) {
-          union(i, j);
-        }
-      }
-    }
-
-    // Group by root
+    for (let i = 0; i < allCols.length; i++) for (let j = i + 1; j < allCols.length; j++) if (allCols[i].fileIdx !== allCols[j].fileIdx && allCols[i].colName.toLowerCase() === allCols[j].colName.toLowerCase()) union(i, j);
+    for (let i = 0; i < allCols.length; i++) for (let j = i + 1; j < allCols.length; j++) if (allCols[i].fileIdx !== allCols[j].fileIdx && find(i) !== find(j) && allCols[i].normName === allCols[j].normName) union(i, j);
+    for (let i = 0; i < allCols.length; i++) for (let j = i + 1; j < allCols.length; j++) if (allCols[i].fileIdx !== allCols[j].fileIdx && find(i) !== find(j) && dice(allCols[i].normName, allCols[j].normName) > 0.8) union(i, j);
     const groups = new Map();
-    allCols.forEach((col, i) => {
-      const root = find(i);
-      if (!groups.has(root)) groups.set(root, []);
-      groups.get(root).push(col);
-    });
-
-    // Build mapping
+    allCols.forEach((col, i) => { const root = find(i); if (!groups.has(root)) groups.set(root, []); groups.get(root).push(col); });
     const mapping = [];
     for (const members of groups.values()) {
-      // Output name: shortest column name in group, lowercased
       const names = members.map(m => m.colName);
       const outputCol = names.reduce((a, b) => a.length <= b.length ? a : b).toLowerCase();
-
       const sources = {};
-      for (const m of members) {
-        sources[m.fileName] = m.colName;
-      }
+      for (const m of members) sources[m.fileName] = m.colName;
       mapping.push({ outputCol, sources });
     }
-
     return mapping;
   }
 
@@ -843,146 +638,69 @@ const DBC = (function() {
     totalSizeEl.textContent = fmtB(tot) + ' / 100 MB';
     totalSizeEl.style.color = tot > MAX ? 'var(--error)' : '';
     if (tot > MAX) convertBtn.disabled = true;
-
     fileList.innerHTML = '';
     files.forEach((f, i) => {
       const e = ext(f.name);
       const d = document.createElement('div');
       d.className = 'file-item';
-      d.innerHTML = `<span class="file-ext">${e}</span>
-        <span class="file-name" title="${f.name}">${f.name}</span>
-        <span class="file-size">${fmtB(f.size)}</span>
-        <button class="file-remove" data-i="${i}">&times;</button>`;
+      d.innerHTML = `<span class="file-ext">${e}</span><span class="file-name" title="${f.name}">${f.name}</span><span class="file-size">${fmtB(f.size)}</span><button class="file-remove" data-i="${i}">&times;</button>`;
       fileList.appendChild(d);
     });
-    fileList.querySelectorAll('.file-remove').forEach(b =>
-      b.addEventListener('click', () => {
-        files.splice(+b.dataset.i, 1);
-        parsedFiles = parsedFiles.filter(pf => files.some(f => f.name === pf.file.name));
-        render();
-        if (mergeToggle.checked) updateMergePanel();
-      }));
+    fileList.querySelectorAll('.file-remove').forEach(b => b.addEventListener('click', () => { files.splice(+b.dataset.i, 1); parsedFiles = parsedFiles.filter(pf => files.some(f => f.name === pf.file.name)); render(); if (mergeToggle.checked) updateMergePanel(); }));
   }
 
   // ── Merge toggle ──
   mergeToggle.addEventListener('change', () => {
-    if (mergeToggle.checked) {
-      appEl.classList.add('merge-active');
-      updateMergePanel();
-    } else {
-      appEl.classList.remove('merge-active');
-      mergePanel.classList.remove('visible');
-    }
+    if (mergeToggle.checked) { appEl.classList.add('merge-active'); updateMergePanel(); }
+    else { appEl.classList.remove('merge-active'); mergePanel.classList.remove('visible'); }
   });
 
   async function updateMergePanel() {
-    if (!mergeToggle.checked || files.length < 2) {
-      mergePanel.classList.remove('visible');
-      return;
-    }
-
-    // Parse files to get headers
+    if (!mergeToggle.checked || files.length < 2) { mergePanel.classList.remove('visible'); return; }
     const needParse = files.filter(f => !parsedFiles.some(pf => pf.file.name === f.name && pf.file.size === f.size));
-
     for (const f of needParse) {
       try {
         const buf = await readFile(f);
         const data = parseInput(buf, ext(f.name));
         parsedFiles.push({ file: f, headers: data.headers, objRows: data.objRows });
-      } catch (err) {
-        console.error('Failed to parse', f.name, err);
-      }
+      } catch (err) { console.error('Parse failed', f.name, err); }
     }
-
-    // Remove parsed files that are no longer in files list
     parsedFiles = parsedFiles.filter(pf => files.some(f => f.name === pf.file.name && f.size === pf.file.size));
-
-    if (parsedFiles.length < 2) {
-      mergePanel.classList.remove('visible');
-      return;
-    }
-
-    // Auto-match
+    if (parsedFiles.length < 2) { mergePanel.classList.remove('visible'); return; }
     mergeMapping = autoMatch(parsedFiles);
-
     renderMergeTable();
     mergePanel.classList.add('visible');
   }
 
   function renderMergeTable() {
-    // Header
     const fileNames = parsedFiles.map(pf => pf.file.name);
-    mergeTableHead.innerHTML = '<tr><th>Output column</th>' +
-      fileNames.map(n => `<th title="${n}">${n.length > 15 ? n.slice(0,12) + '...' : n}</th>`).join('') +
-      '<th></th></tr>';
-
-    // Body
+    mergeTableHead.innerHTML = '<tr><th>Output column</th>' + fileNames.map(n => `<th title="${n}">${n.length > 15 ? n.slice(0, 12) + '...' : n}</th>`).join('') + '<th></th></tr>';
     mergeTableBody.innerHTML = '';
     mergeMapping.forEach((m, rowIdx) => {
       const tr = document.createElement('tr');
-
-      // Output column name input
       let html = `<td><input type="text" value="${escHtml(m.outputCol)}" data-row="${rowIdx}" class="merge-out-col"></td>`;
-
-      // Select for each file
       fileNames.forEach(fn => {
         const pf = parsedFiles.find(p => p.file.name === fn);
         const cols = pf ? pf.headers : [];
         const selected = m.sources[fn] || '';
-
-        html += '<td><select data-row="' + rowIdx + '" data-file="' + escHtml(fn) + '" class="merge-file-col">';
-        html += '<option value="">—</option>';
-        cols.forEach(c => {
-          html += `<option value="${escHtml(c)}"${c === selected ? ' selected' : ''}>${escHtml(c)}</option>`;
-        });
+        html += '<td><select data-row="' + rowIdx + '" data-file="' + escHtml(fn) + '" class="merge-file-col"><option value="">—</option>';
+        cols.forEach(c => { html += `<option value="${escHtml(c)}"${c === selected ? ' selected' : ''}>${escHtml(c)}</option>`; });
         html += '</select></td>';
       });
-
-      // Remove button
       html += `<td><button class="merge-row-remove" data-row="${rowIdx}">&times;</button></td>`;
-
       tr.innerHTML = html;
       mergeTableBody.appendChild(tr);
     });
-
-    // Event listeners
-    mergeTableBody.querySelectorAll('.merge-out-col').forEach(inp => {
-      inp.addEventListener('input', e => {
-        mergeMapping[+e.target.dataset.row].outputCol = e.target.value;
-      });
-    });
-
-    mergeTableBody.querySelectorAll('.merge-file-col').forEach(sel => {
-      sel.addEventListener('change', e => {
-        const row = +e.target.dataset.row;
-        const file = e.target.dataset.file;
-        if (e.target.value) {
-          mergeMapping[row].sources[file] = e.target.value;
-        } else {
-          delete mergeMapping[row].sources[file];
-        }
-      });
-    });
-
-    mergeTableBody.querySelectorAll('.merge-row-remove').forEach(btn => {
-      btn.addEventListener('click', e => {
-        mergeMapping.splice(+e.target.dataset.row, 1);
-        renderMergeTable();
-      });
-    });
+    mergeTableBody.querySelectorAll('.merge-out-col').forEach(inp => { inp.addEventListener('input', e => { mergeMapping[+e.target.dataset.row].outputCol = e.target.value; }); });
+    mergeTableBody.querySelectorAll('.merge-file-col').forEach(sel => { sel.addEventListener('change', e => { const row = +e.target.dataset.row, file = e.target.dataset.file; if (e.target.value) mergeMapping[row].sources[file] = e.target.value; else delete mergeMapping[row].sources[file]; }); });
+    mergeTableBody.querySelectorAll('.merge-row-remove').forEach(btn => { btn.addEventListener('click', e => { mergeMapping.splice(+e.target.dataset.row, 1); renderMergeTable(); }); });
   }
 
-  mergeAddCol.addEventListener('click', () => {
-    const newCol = { outputCol: 'new_column', sources: {} };
-    mergeMapping.push(newCol);
-    renderMergeTable();
-  });
+  mergeAddCol.addEventListener('click', () => { mergeMapping.push({ outputCol: 'new_column', sources: {} }); renderMergeTable(); });
 
-  function escHtml(s) {
-    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-  }
+  function escHtml(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 
-  // ── Conversion engine ──
+  // ── File reading ──
   const readFile = f => new Promise((ok, fail) => {
     const r = new FileReader();
     r.onload = () => ok(r.result);
@@ -991,30 +709,10 @@ const DBC = (function() {
   });
 
   function parseInput(buf, e) {
-    if (e === 'dbc') {
-      const { fields, records } = DBC.parse(buf);
-      const h = fields.map(f => f.name);
-      return { headers: h, rows: records.map(r => h.map(k => r[k] ?? '')), objRows: records };
-    }
-    if (e === 'dbf') {
-      const { fields, records } = DBF.parse(buf);
-      const h = fields.map(f => f.name);
-      return { headers: h, rows: records.map(r => h.map(k => r[k] ?? '')), objRows: records };
-    }
-    if (e === 'jsonl') {
-      const t = new TextDecoder('utf-8').decode(buf);
-      const d = t.trim().split('\n').filter(l => l.trim()).map((l,i) => {
-        try { return JSON.parse(l); } catch { throw new Error('JSONL: invalid line '+(i+1)); }
-      });
-      if (!d.length) throw new Error('JSONL is empty');
-      return s2i(XLSX.utils.json_to_sheet(d));
-    }
-    if (e === 'json') {
-      let p = JSON.parse(new TextDecoder('utf-8').decode(buf));
-      if (!Array.isArray(p)) { const k = Object.keys(p).find(k => Array.isArray(p[k])); p = k ? p[k] : [p]; }
-      if (!p.length) throw new Error('JSON is empty');
-      return s2i(XLSX.utils.json_to_sheet(p));
-    }
+    if (e === 'dbc') { const { fields, records } = DBC.parse(buf); const h = fields.map(f => f.name); return { headers: h, rows: records.map(r => h.map(k => r[k] ?? '')), objRows: records }; }
+    if (e === 'dbf') { const { fields, records } = DBF.parse(buf); const h = fields.map(f => f.name); return { headers: h, rows: records.map(r => h.map(k => r[k] ?? '')), objRows: records }; }
+    if (e === 'jsonl') { const t = new TextDecoder('utf-8').decode(buf); const d = t.trim().split('\n').filter(l => l.trim()).map((l, i) => { try { return JSON.parse(l); } catch { throw new Error('JSONL: invalid line ' + (i + 1)); } }); if (!d.length) throw new Error('JSONL is empty'); return s2i(XLSX.utils.json_to_sheet(d)); }
+    if (e === 'json') { let p = JSON.parse(new TextDecoder('utf-8').decode(buf)); if (!Array.isArray(p)) { const k = Object.keys(p).find(k => Array.isArray(p[k])); p = k ? p[k] : [p]; } if (!p.length) throw new Error('JSON is empty'); return s2i(XLSX.utils.json_to_sheet(p)); }
     const opts = { type: 'array', raw: true, cellDates: true };
     if (e === 'csv' || e === 'txt') opts.FS = ',';
     if (e === 'tsv') opts.FS = '\t';
@@ -1025,92 +723,326 @@ const DBC = (function() {
 
   function s2i(ws) {
     const raw = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
-    const h = (raw[0]||[]).map(String);
+    const h = (raw[0] || []).map(String);
     return { headers: h, rows: raw.slice(1), objRows: XLSX.utils.sheet_to_json(ws, { raw: true, defval: '' }) };
   }
 
-  function toOutput(data, fmt, outputName) {
-    const { headers, rows, objRows } = data;
-    const out = outputName + '.' + fmt;
-    const m = { rows: rows.length, cols: headers.length };
+  // ═══════════════════════════════════════════════════════════════════
+  // TIERED OUTPUT GENERATION
+  // ═══════════════════════════════════════════════════════════════════
 
-    if (fmt === 'dbf') {
-      const recs = objRows || rows.map(r => { const o = {}; headers.forEach((h,i) => o[h]=r[i]??''); return o; });
-      return { name: out, blob: new Blob([DBF.write(recs)], { type: 'application/x-dbf' }), ...m };
-    }
-
-    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
-
-    let c, t;
-    switch (fmt) {
-      case 'csv': c = XLSX.utils.sheet_to_csv(ws,{FS:',',RS:'\n'}); t='text/csv'; break;
-      case 'tsv': c = XLSX.utils.sheet_to_csv(ws,{FS:'\t',RS:'\n'}); t='text/tab-separated-values'; break;
-      case 'xlsx': {
-        const b = XLSX.write(wb,{type:'array',bookType:'xlsx'});
-        return { name: out, blob: new Blob([b],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}), ...m };
-      }
-      case 'json': {
-        const recs = objRows || rows.map(r => { const o = {}; headers.forEach((h,i) => o[h]=r[i]??''); return o; });
-        c = JSON.stringify(recs,null,2); t='application/json'; break;
-      }
-      case 'jsonl': {
-        const recs = objRows || rows.map(r => { const o = {}; headers.forEach((h,i) => o[h]=r[i]??''); return o; });
-        c = recs.map(r=>JSON.stringify(r)).join('\n'); t='application/x-jsonlines'; break;
-      }
-      case 'xml': {
-        const recs = objRows || rows.map(r => { const o = {}; headers.forEach((h,i) => o[h]=r[i]??''); return o; });
-        let x = '<?xml version="1.0" encoding="UTF-8"?>\n<records>\n';
-        for (const row of recs) {
-          x += '  <record>\n';
-          for (const [k,v] of Object.entries(row)) {
-            const tag = String(k).replace(/[^a-zA-Z0-9_]/g,'_').replace(/^(\d)/,'_$1');
-            x += '    <'+tag+'>'+String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</'+tag+'>\n';
-          }
-          x += '  </record>\n';
-        }
-        c = x + '</records>'; t='application/xml'; break;
-      }
-      case 'md': {
-        if (!headers.length) { c='*(empty)*'; t='text/markdown'; break; }
-        let md = '| '+headers.join(' | ')+' |\n| '+headers.map(()=>'---').join(' | ')+' |\n';
-        for (const r of rows) md += '| '+headers.map((_,i)=>String(r[i]??'').replace(/\|/g,'\\|')).join(' | ')+' |\n';
-        c = md; t='text/markdown'; break;
-      }
-      case 'sql': {
-        const tbl = outputName.replace(/[^a-zA-Z0-9_]/g,'_');
-        const cols = headers.map(h=>'"'+String(h).replace(/"/g,'""')+'"');
-        let sql = '-- DataForge\n-- Table: '+tbl+'\n\n';
-        for (const r of rows) {
-          const vals = headers.map((_,i)=>{ const v=r[i]; if(v==null||v==='')return'NULL'; if(v instanceof Date)return"'"+v.toISOString()+"'"; if(typeof v==='number')return v; return"'"+String(v).replace(/'/g,"''")+"'"; });
-          sql += 'INSERT INTO "'+tbl+'" ('+cols.join(', ')+') VALUES ('+vals.join(', ')+');\n';
-        }
-        c = sql; t='application/sql'; break;
-      }
-      default: throw new Error('Unsupported format: '+fmt);
-    }
-    return { name: out, blob: new Blob([c],{type:t}), ...m };
+  // Convert row to CSV line
+  function rowToCSV(row, sep = ',') {
+    return row.map(v => {
+      const s = String(v ?? '');
+      if (s.includes(sep) || s.includes('"') || s.includes('\n')) return '"' + s.replace(/"/g, '""') + '"';
+      return s;
+    }).join(sep) + '\n';
   }
 
-  // ── Convert ──
+  // Tier 1: Direct (small datasets)
+  function generateOutputDirect(headers, rows, fmt, outputName) {
+    if (fmt === 'csv' || fmt === 'tsv') {
+      const sep = fmt === 'csv' ? ',' : '\t';
+      let content = rowToCSV(headers, sep);
+      for (const row of rows) content += rowToCSV(row, sep);
+      return new Blob([content], { type: fmt === 'csv' ? 'text/csv' : 'text/tab-separated-values' });
+    }
+    if (fmt === 'json' || fmt === 'jsonl' || fmt === 'xml') {
+      const recs = rows.map(r => { const o = {}; headers.forEach((h, i) => o[h] = r[i] ?? ''); return o; });
+      if (fmt === 'json') return new Blob([JSON.stringify(recs, null, 2)], { type: 'application/json' });
+      if (fmt === 'jsonl') return new Blob([recs.map(r => JSON.stringify(r)).join('\n')], { type: 'application/x-jsonlines' });
+      let x = '<?xml version="1.0" encoding="UTF-8"?>\n<records>\n';
+      for (const row of recs) { x += '  <record>\n'; for (const [k, v] of Object.entries(row)) { const tag = String(k).replace(/[^a-zA-Z0-9_]/g, '_').replace(/^(\d)/, '_$1'); x += '    <' + tag + '>' + String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</' + tag + '>\n'; } x += '  </record>\n'; }
+      return new Blob([x + '</records>'], { type: 'application/xml' });
+    }
+    if (fmt === 'md') {
+      if (!headers.length) return new Blob(['*(empty)*'], { type: 'text/markdown' });
+      let md = '| ' + headers.join(' | ') + ' |\n| ' + headers.map(() => '---').join(' | ') + ' |\n';
+      for (const r of rows) md += '| ' + headers.map((_, i) => String(r[i] ?? '').replace(/\|/g, '\\|')).join(' | ') + ' |\n';
+      return new Blob([md], { type: 'text/markdown' });
+    }
+    if (fmt === 'sql') {
+      const tbl = outputName.replace(/[^a-zA-Z0-9_]/g, '_');
+      const cols = headers.map(h => '"' + String(h).replace(/"/g, '""') + '"');
+      let sql = '-- DataForge\n-- Table: ' + tbl + '\n\n';
+      for (const r of rows) {
+        const vals = headers.map((_, i) => { const v = r[i]; if (v == null || v === '') return 'NULL'; if (v instanceof Date) return "'" + v.toISOString() + "'"; if (typeof v === 'number') return v; return "'" + String(v).replace(/'/g, "''") + "'"; });
+        sql += 'INSERT INTO "' + tbl + '" (' + cols.join(', ') + ') VALUES (' + vals.join(', ') + ');\n';
+      }
+      return new Blob([sql], { type: 'application/sql' });
+    }
+    if (fmt === 'xlsx') {
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+      const b = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+      return new Blob([b], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    }
+    if (fmt === 'dbf') {
+      const recs = rows.map(r => { const o = {}; headers.forEach((h, i) => o[h] = r[i] ?? ''); return o; });
+      return new Blob([DBF.write(recs)], { type: 'application/x-dbf' });
+    }
+    throw new Error('Unsupported format: ' + fmt);
+  }
+
+  // Tier 2/3: Chunked/Streaming (medium/large datasets)
+  async function generateOutputChunked(headers, rows, fmt, outputName, onProgress) {
+    const totalRows = rows.length;
+    const tier = getTier(totalRows);
+    const chunkSize = tier.chunkSize || 5000;
+
+    if (fmt === 'csv' || fmt === 'tsv') {
+      const sep = fmt === 'csv' ? ',' : '\t';
+      const parts = [rowToCSV(headers, sep)];
+      for (let i = 0; i < totalRows; i += chunkSize) {
+        const chunk = rows.slice(i, i + chunkSize);
+        let chunkStr = '';
+        for (const row of chunk) chunkStr += rowToCSV(row, sep);
+        parts.push(chunkStr);
+        onProgress(Math.min(100, Math.round((i + chunkSize) / totalRows * 100)), `Processing rows ${i + 1}-${Math.min(i + chunkSize, totalRows)} of ${totalRows}...`);
+        await yieldToUI();
+      }
+      return new Blob(parts, { type: fmt === 'csv' ? 'text/csv' : 'text/tab-separated-values' });
+    }
+
+    if (fmt === 'jsonl') {
+      const parts = [];
+      for (let i = 0; i < totalRows; i += chunkSize) {
+        const chunk = rows.slice(i, i + chunkSize);
+        let chunkStr = '';
+        for (const row of chunk) {
+          const obj = {}; headers.forEach((h, j) => obj[h] = row[j] ?? '');
+          chunkStr += JSON.stringify(obj) + '\n';
+        }
+        parts.push(chunkStr);
+        onProgress(Math.min(100, Math.round((i + chunkSize) / totalRows * 100)), `Processing rows ${i + 1}-${Math.min(i + chunkSize, totalRows)} of ${totalRows}...`);
+        await yieldToUI();
+      }
+      return new Blob(parts, { type: 'application/x-jsonlines' });
+    }
+
+    if (fmt === 'json') {
+      const parts = ['[\n'];
+      let first = true;
+      for (let i = 0; i < totalRows; i += chunkSize) {
+        const chunk = rows.slice(i, i + chunkSize);
+        let chunkStr = '';
+        for (const row of chunk) {
+          const obj = {}; headers.forEach((h, j) => obj[h] = row[j] ?? '');
+          chunkStr += (first ? '' : ',\n') + JSON.stringify(obj);
+          first = false;
+        }
+        parts.push(chunkStr);
+        onProgress(Math.min(100, Math.round((i + chunkSize) / totalRows * 100)), `Processing rows ${i + 1}-${Math.min(i + chunkSize, totalRows)} of ${totalRows}...`);
+        await yieldToUI();
+      }
+      parts.push('\n]');
+      return new Blob(parts, { type: 'application/json' });
+    }
+
+    if (fmt === 'xml') {
+      const parts = ['<?xml version="1.0" encoding="UTF-8"?>\n<records>\n'];
+      for (let i = 0; i < totalRows; i += chunkSize) {
+        const chunk = rows.slice(i, i + chunkSize);
+        let chunkStr = '';
+        for (const row of chunk) {
+          chunkStr += '  <record>\n';
+          headers.forEach((h, j) => {
+            const tag = String(h).replace(/[^a-zA-Z0-9_]/g, '_').replace(/^(\d)/, '_$1');
+            const v = String(row[j] ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            chunkStr += '    <' + tag + '>' + v + '</' + tag + '>\n';
+          });
+          chunkStr += '  </record>\n';
+        }
+        parts.push(chunkStr);
+        onProgress(Math.min(100, Math.round((i + chunkSize) / totalRows * 100)), `Processing rows ${i + 1}-${Math.min(i + chunkSize, totalRows)} of ${totalRows}...`);
+        await yieldToUI();
+      }
+      parts.push('</records>');
+      return new Blob(parts, { type: 'application/xml' });
+    }
+
+    if (fmt === 'sql') {
+      const tbl = outputName.replace(/[^a-zA-Z0-9_]/g, '_');
+      const cols = headers.map(h => '"' + String(h).replace(/"/g, '""') + '"');
+      const parts = ['-- DataForge\n-- Table: ' + tbl + '\n\n'];
+      for (let i = 0; i < totalRows; i += chunkSize) {
+        const chunk = rows.slice(i, i + chunkSize);
+        let chunkStr = '';
+        for (const row of chunk) {
+          const vals = headers.map((_, j) => { const v = row[j]; if (v == null || v === '') return 'NULL'; if (typeof v === 'number') return v; return "'" + String(v).replace(/'/g, "''") + "'"; });
+          chunkStr += 'INSERT INTO "' + tbl + '" (' + cols.join(', ') + ') VALUES (' + vals.join(', ') + ');\n';
+        }
+        parts.push(chunkStr);
+        onProgress(Math.min(100, Math.round((i + chunkSize) / totalRows * 100)), `Processing rows ${i + 1}-${Math.min(i + chunkSize, totalRows)} of ${totalRows}...`);
+        await yieldToUI();
+      }
+      return new Blob(parts, { type: 'application/sql' });
+    }
+
+    if (fmt === 'md') {
+      const parts = [];
+      parts.push('| ' + headers.join(' | ') + ' |\n| ' + headers.map(() => '---').join(' | ') + ' |\n');
+      for (let i = 0; i < totalRows; i += chunkSize) {
+        const chunk = rows.slice(i, i + chunkSize);
+        let chunkStr = '';
+        for (const row of chunk) chunkStr += '| ' + headers.map((_, j) => String(row[j] ?? '').replace(/\|/g, '\\|')).join(' | ') + ' |\n';
+        parts.push(chunkStr);
+        onProgress(Math.min(100, Math.round((i + chunkSize) / totalRows * 100)), `Processing rows ${i + 1}-${Math.min(i + chunkSize, totalRows)} of ${totalRows}...`);
+        await yieldToUI();
+      }
+      return new Blob(parts, { type: 'text/markdown' });
+    }
+
+    // For xlsx and dbf, we need to use direct method (they don't stream well)
+    onProgress(50, 'Generating ' + fmt.toUpperCase() + ' file...');
+    await yieldToUI();
+    return generateOutputDirect(headers, rows, fmt, outputName);
+  }
+
+  // Tier 4: File System API (very large datasets)
+  async function generateOutputFileSystem(headers, rows, fmt, outputName, onProgress) {
+    if (!supportsFileSystemAPI()) {
+      // Fallback to chunked with warning
+      addResult(false, 'warning', null, 'File System API not supported. Using chunked mode (may be slow for >1M rows).');
+      return generateOutputChunked(headers, rows, fmt, outputName, onProgress);
+    }
+
+    // For non-streamable formats, fall back to chunked
+    if (fmt === 'xlsx' || fmt === 'dbf') {
+      return generateOutputChunked(headers, rows, fmt, outputName, onProgress);
+    }
+
+    const totalRows = rows.length;
+    const chunkSize = 5000;
+    const mimeTypes = {
+      csv: 'text/csv', tsv: 'text/tab-separated-values', json: 'application/json',
+      jsonl: 'application/x-jsonlines', xml: 'application/xml', sql: 'application/sql', md: 'text/markdown'
+    };
+
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: outputName + '.' + fmt,
+        types: [{ description: fmt.toUpperCase() + ' file', accept: { [mimeTypes[fmt] || 'text/plain']: ['.' + fmt] } }]
+      });
+      const writable = await handle.createWritable();
+
+      if (fmt === 'csv' || fmt === 'tsv') {
+        const sep = fmt === 'csv' ? ',' : '\t';
+        await writable.write(rowToCSV(headers, sep));
+        for (let i = 0; i < totalRows; i += chunkSize) {
+          const chunk = rows.slice(i, i + chunkSize);
+          let chunkStr = '';
+          for (const row of chunk) chunkStr += rowToCSV(row, sep);
+          await writable.write(chunkStr);
+          onProgress(Math.min(100, Math.round((i + chunkSize) / totalRows * 100)), `Writing rows ${i + 1}-${Math.min(i + chunkSize, totalRows)} of ${totalRows}...`);
+        }
+      } else if (fmt === 'jsonl') {
+        for (let i = 0; i < totalRows; i += chunkSize) {
+          const chunk = rows.slice(i, i + chunkSize);
+          let chunkStr = '';
+          for (const row of chunk) { const obj = {}; headers.forEach((h, j) => obj[h] = row[j] ?? ''); chunkStr += JSON.stringify(obj) + '\n'; }
+          await writable.write(chunkStr);
+          onProgress(Math.min(100, Math.round((i + chunkSize) / totalRows * 100)), `Writing rows ${i + 1}-${Math.min(i + chunkSize, totalRows)} of ${totalRows}...`);
+        }
+      } else if (fmt === 'json') {
+        await writable.write('[\n');
+        let first = true;
+        for (let i = 0; i < totalRows; i += chunkSize) {
+          const chunk = rows.slice(i, i + chunkSize);
+          let chunkStr = '';
+          for (const row of chunk) { const obj = {}; headers.forEach((h, j) => obj[h] = row[j] ?? ''); chunkStr += (first ? '' : ',\n') + JSON.stringify(obj); first = false; }
+          await writable.write(chunkStr);
+          onProgress(Math.min(100, Math.round((i + chunkSize) / totalRows * 100)), `Writing rows ${i + 1}-${Math.min(i + chunkSize, totalRows)} of ${totalRows}...`);
+        }
+        await writable.write('\n]');
+      } else if (fmt === 'xml') {
+        await writable.write('<?xml version="1.0" encoding="UTF-8"?>\n<records>\n');
+        for (let i = 0; i < totalRows; i += chunkSize) {
+          const chunk = rows.slice(i, i + chunkSize);
+          let chunkStr = '';
+          for (const row of chunk) {
+            chunkStr += '  <record>\n';
+            headers.forEach((h, j) => { const tag = String(h).replace(/[^a-zA-Z0-9_]/g, '_').replace(/^(\d)/, '_$1'); const v = String(row[j] ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); chunkStr += '    <' + tag + '>' + v + '</' + tag + '>\n'; });
+            chunkStr += '  </record>\n';
+          }
+          await writable.write(chunkStr);
+          onProgress(Math.min(100, Math.round((i + chunkSize) / totalRows * 100)), `Writing rows ${i + 1}-${Math.min(i + chunkSize, totalRows)} of ${totalRows}...`);
+        }
+        await writable.write('</records>');
+      } else if (fmt === 'sql') {
+        const tbl = outputName.replace(/[^a-zA-Z0-9_]/g, '_');
+        const cols = headers.map(h => '"' + String(h).replace(/"/g, '""') + '"');
+        await writable.write('-- DataForge\n-- Table: ' + tbl + '\n\n');
+        for (let i = 0; i < totalRows; i += chunkSize) {
+          const chunk = rows.slice(i, i + chunkSize);
+          let chunkStr = '';
+          for (const row of chunk) { const vals = headers.map((_, j) => { const v = row[j]; if (v == null || v === '') return 'NULL'; if (typeof v === 'number') return v; return "'" + String(v).replace(/'/g, "''") + "'"; }); chunkStr += 'INSERT INTO "' + tbl + '" (' + cols.join(', ') + ') VALUES (' + vals.join(', ') + ');\n'; }
+          await writable.write(chunkStr);
+          onProgress(Math.min(100, Math.round((i + chunkSize) / totalRows * 100)), `Writing rows ${i + 1}-${Math.min(i + chunkSize, totalRows)} of ${totalRows}...`);
+        }
+      } else if (fmt === 'md') {
+        await writable.write('| ' + headers.join(' | ') + ' |\n| ' + headers.map(() => '---').join(' | ') + ' |\n');
+        for (let i = 0; i < totalRows; i += chunkSize) {
+          const chunk = rows.slice(i, i + chunkSize);
+          let chunkStr = '';
+          for (const row of chunk) chunkStr += '| ' + headers.map((_, j) => String(row[j] ?? '').replace(/\|/g, '\\|')).join(' | ') + ' |\n';
+          await writable.write(chunkStr);
+          onProgress(Math.min(100, Math.round((i + chunkSize) / totalRows * 100)), `Writing rows ${i + 1}-${Math.min(i + chunkSize, totalRows)} of ${totalRows}...`);
+        }
+      }
+
+      await writable.close();
+      return null; // Signal that file was saved directly
+    } catch (err) {
+      if (err.name === 'AbortError') throw new Error('File save cancelled');
+      throw err;
+    }
+  }
+
+  // Main output generator that selects tier
+  async function generateOutput(headers, rows, fmt, outputName, onProgress) {
+    const rowCount = rows.length;
+    const tier = getTier(rowCount);
+
+    onProgress(0, `Using ${tier.name} processing for ${rowCount.toLocaleString()} rows...`);
+    await yieldToUI();
+
+    if (tier === ProcessingTier.DIRECT) {
+      return generateOutputDirect(headers, rows, fmt, outputName);
+    } else if (tier === ProcessingTier.CHUNKED || tier === ProcessingTier.STREAMING) {
+      return generateOutputChunked(headers, rows, fmt, outputName, onProgress);
+    } else {
+      return generateOutputFileSystem(headers, rows, fmt, outputName, onProgress);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // CONVERT HANDLER
+  // ═══════════════════════════════════════════════════════════════════
   convertBtn.addEventListener('click', async () => {
     if (!files.length) return;
     convertBtn.classList.add('processing');
     resultsEl.innerHTML = '';
 
     const fmt = outputFmt.value;
-    const zip = new JSZip();
     const isMerge = mergeToggle.checked && files.length >= 2 && mergeMapping.length > 0;
 
-    if (isMerge) {
-      // Merge mode
-      try {
+    try {
+      if (isMerge) {
+        // Merge mode
         const outHeaders = mergeMapping.map(m => m.outputCol).concat(['_source_file']);
         const allRows = [];
         const fileSummary = [];
 
-        for (const f of files) {
+        showProgress(0, 'Reading files...');
+
+        for (let fi = 0; fi < files.length; fi++) {
+          const f = files[fi];
+          showProgress(Math.round(fi / files.length * 30), `Reading ${f.name}...`);
+          await yieldToUI();
+
           const e = ext(f.name);
           const buf = await readFile(f);
           const data = parseInput(buf, e);
@@ -1122,96 +1054,209 @@ const DBC = (function() {
               const srcCol = m.sources[f.name];
               newRow.push(srcCol ? (srcRow[srcCol] ?? '') : '');
             }
-            newRow.push(f.name); // _source_file
+            newRow.push(f.name);
             allRows.push(newRow);
             rowCount++;
           }
           fileSummary.push({ input: f.name, rows_contributed: rowCount });
         }
 
-        const outData = { headers: outHeaders, rows: allRows, objRows: null };
-        const out = toOutput(outData, fmt, 'merged');
-        zip.file(out.name, out.blob);
+        const tier = getTier(allRows.length);
+        addResult(false, 'info', null, `${allRows.length.toLocaleString()} rows total → ${tier.name} mode`);
 
-        // Build column mapping for summary (simple copy)
-        const colMapping = {};
-        for (const m of mergeMapping) {
-          colMapping[m.outputCol] = Object.assign({}, m.sources);
+        const blob = await generateOutput(outHeaders, allRows, fmt, 'merged', showProgress);
+
+        if (blob === null) {
+          // File was saved directly via File System API
+          addResult(true, files.length + ' files', 'merged.' + fmt + ' (saved)', allRows.length + ' rows');
+        } else {
+          // Package in ZIP
+          showProgress(95, 'Creating ZIP...');
+          await yieldToUI();
+
+          const zip = new JSZip();
+          zip.file('merged.' + fmt, blob);
+
+          const colMapping = {};
+          for (const m of mergeMapping) colMapping[m.outputCol] = Object.assign({}, m.sources);
+          zip.file('conversion_summary.json', JSON.stringify({ generated: new Date().toISOString(), mode: 'merge', target_format: fmt, column_mapping: colMapping, files: fileSummary, total_rows: allRows.length }, null, 2));
+
+          const zipBlob = await zip.generateAsync({ type: 'blob' });
+          const url = URL.createObjectURL(zipBlob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'dataforge_merged_' + fmt + '_' + Date.now() + '.zip';
+          a.style.display = 'none';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => URL.revokeObjectURL(url), 5000);
+
+          addResult(true, files.length + ' files', 'merged.' + fmt, allRows.length + ' rows, ' + outHeaders.length + ' cols');
         }
 
-        zip.file('conversion_summary.json', JSON.stringify({
-          generated: new Date().toISOString(),
-          mode: 'merge',
-          target_format: fmt,
-          column_mapping: colMapping,
-          files: fileSummary,
-          total_rows: allRows.length
-        }, null, 2));
+      } else {
+        // Normal mode
+        const zip = new JSZip();
+        const summary = [];
+        let ok = 0;
 
-        addResult(true, files.length + ' files', out.name, allRows.length + ' rows, ' + outHeaders.length + ' cols');
+        for (let fi = 0; fi < files.length; fi++) {
+          const f = files[fi];
+          const e = ext(f.name);
 
-        const blob = await zip.generateAsync({ type: 'blob' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.href = url;
-        a.download = 'dataforge_merged_' + fmt + '_' + Date.now() + '.zip';
-        a.style.display = 'none';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(url), 5000);
+          showProgress(Math.round(fi / files.length * 100), `Processing ${f.name}...`);
+          await yieldToUI();
 
-      } catch (err) {
-        addResult(false, 'merge', null, err.message || 'Unknown error');
-      }
+          try {
+            const buf = await readFile(f);
+            const data = parseInput(buf, e);
+            const tier = getTier(data.rows.length);
 
-    } else {
-      // Normal mode
-      const summary = [];
-      let ok = 0;
+            if (data.rows.length > 50000) {
+              addResult(false, 'info', null, `${f.name}: ${data.rows.length.toLocaleString()} rows → ${tier.name} mode`);
+            }
 
-      for (const f of files) {
-        const e = ext(f.name);
-        try {
-          const buf = await readFile(f);
-          const data = parseInput(buf, e);
-          const out = toOutput(data, fmt, base(f.name));
-          zip.file(out.name, out.blob);
-          summary.push({ input: f.name, output: out.name, status: 'ok', rows: out.rows, cols: out.cols });
-          ok++;
-          addResult(true, f.name, out.name, out.rows + ' rows, ' + out.cols + ' cols');
-        } catch (err) {
-          const msg = err.message || 'Unknown error';
-          summary.push({ input: f.name, output: null, status: 'error', error: msg });
-          addResult(false, f.name, null, msg);
+            const blob = await generateOutput(data.headers, data.rows, fmt, base(f.name), showProgress);
+
+            if (blob !== null) {
+              zip.file(base(f.name) + '.' + fmt, blob);
+            }
+
+            summary.push({ input: f.name, output: base(f.name) + '.' + fmt, status: 'ok', rows: data.rows.length, cols: data.headers.length });
+            ok++;
+            addResult(true, f.name, base(f.name) + '.' + fmt, data.rows.length + ' rows, ' + data.headers.length + ' cols');
+          } catch (err) {
+            const msg = err.message || 'Unknown error';
+            summary.push({ input: f.name, output: null, status: 'error', error: msg });
+            addResult(false, f.name, null, msg);
+          }
+        }
+
+        if (ok > 0) {
+          showProgress(95, 'Creating ZIP...');
+          await yieldToUI();
+
+          zip.file('conversion_summary.json', JSON.stringify({ generated: new Date().toISOString(), target_format: fmt, files: summary }, null, 2));
+          const zipBlob = await zip.generateAsync({ type: 'blob' });
+          const url = URL.createObjectURL(zipBlob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'dataforge_' + fmt + '_' + Date.now() + '.zip';
+          a.style.display = 'none';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => URL.revokeObjectURL(url), 5000);
         }
       }
-
-      zip.file('conversion_summary.json', JSON.stringify({ generated: new Date().toISOString(), target_format: fmt, files: summary }, null, 2));
-
-      if (ok > 0) {
-        const blob = await zip.generateAsync({ type: 'blob' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.href = url;
-        a.download = 'dataforge_' + fmt + '_' + Date.now() + '.zip';
-        a.style.display = 'none';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(url), 5000);
-      }
+    } catch (err) {
+      addResult(false, 'Error', null, err.message || 'Unknown error');
     }
 
+    hideProgress();
     convertBtn.classList.remove('processing');
   });
 
   function addResult(ok, from, to, detail) {
     const d = document.createElement('div');
-    d.className = 'result-item ' + (ok ? 'success' : 'error');
-    d.innerHTML = ok
-      ? '<span class="result-icon">&#10003;</span><span class="result-from">' + from + '</span><span class="result-arrow">&rarr;</span><span class="result-to">' + to + '</span><span class="result-meta">' + detail + '</span>'
-      : '<span class="result-icon">&#10007;</span><span class="result-from">' + from + '</span><span class="result-error-msg" title="' + detail + '">' + detail + '</span>';
+    if (from === 'info' || from === 'warning') {
+      d.className = 'result-item info';
+      d.innerHTML = '<span class="result-icon">ℹ</span><span>' + detail + '</span>';
+    } else {
+      d.className = 'result-item ' + (ok ? 'success' : 'error');
+      d.innerHTML = ok
+        ? '<span class="result-icon">&#10003;</span><span class="result-from">' + from + '</span><span class="result-arrow">&rarr;</span><span class="result-to">' + to + '</span><span class="result-meta">' + detail + '</span>'
+        : '<span class="result-icon">&#10007;</span><span class="result-from">' + from + '</span><span class="result-error-msg" title="' + detail + '">' + detail + '</span>';
+    }
     resultsEl.appendChild(d);
   }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // PERFORMANCE TESTS
+  // ═══════════════════════════════════════════════════════════════════
+  document.querySelectorAll('.test-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const rowCount = parseInt(btn.dataset.rows);
+      testResults.textContent = `Generating ${rowCount.toLocaleString()} test rows...\n`;
+
+      await yieldToUI();
+
+      // Generate test data
+      const startGen = performance.now();
+      const headers = ['id', 'name', 'email', 'city', 'country', 'amount', 'date', 'status'];
+      const rows = [];
+      const cities = ['New York', 'London', 'Tokyo', 'Paris', 'Sydney', 'Berlin', 'Toronto', 'Dubai'];
+      const countries = ['USA', 'UK', 'Japan', 'France', 'Australia', 'Germany', 'Canada', 'UAE'];
+      const statuses = ['active', 'pending', 'completed', 'cancelled'];
+
+      for (let i = 0; i < rowCount; i++) {
+        rows.push([
+          i + 1,
+          'User ' + (i + 1),
+          'user' + (i + 1) + '@example.com',
+          cities[i % cities.length],
+          countries[i % countries.length],
+          Math.round(Math.random() * 10000) / 100,
+          '2024-' + String(1 + (i % 12)).padStart(2, '0') + '-' + String(1 + (i % 28)).padStart(2, '0'),
+          statuses[i % statuses.length]
+        ]);
+
+        if (i % 50000 === 0 && i > 0) {
+          testResults.textContent += `  Generated ${i.toLocaleString()} rows...\n`;
+          await yieldToUI();
+        }
+      }
+
+      const genTime = performance.now() - startGen;
+      const tier = getTier(rowCount);
+
+      testResults.textContent += `\n✓ Generated ${rowCount.toLocaleString()} rows in ${Math.round(genTime)}ms\n`;
+      testResults.textContent += `\nProcessing Tier: ${tier.name}\n`;
+      testResults.textContent += `Chunk Size: ${tier.chunkSize || 'N/A'}\n`;
+      testResults.textContent += `File System API: ${supportsFileSystemAPI() ? 'Supported' : 'Not supported'}\n`;
+      testResults.textContent += `\nRunning conversion tests...\n`;
+
+      // Test CSV generation
+      const startCSV = performance.now();
+      try {
+        const blob = await generateOutput(headers, rows, 'csv', 'test', (pct, msg) => {
+          // Silent progress for tests
+        });
+        const csvTime = performance.now() - startCSV;
+        const size = blob ? blob.size : 0;
+        testResults.textContent += `\n✓ CSV: ${Math.round(csvTime)}ms, ${fmtB(size)}\n`;
+      } catch (err) {
+        testResults.textContent += `\n✗ CSV: ${err.message}\n`;
+      }
+
+      await yieldToUI();
+
+      // Test JSONL generation
+      const startJSONL = performance.now();
+      try {
+        const blob = await generateOutput(headers, rows, 'jsonl', 'test', () => {});
+        const jsonlTime = performance.now() - startJSONL;
+        const size = blob ? blob.size : 0;
+        testResults.textContent += `✓ JSONL: ${Math.round(jsonlTime)}ms, ${fmtB(size)}\n`;
+      } catch (err) {
+        testResults.textContent += `✗ JSONL: ${err.message}\n`;
+      }
+
+      await yieldToUI();
+
+      // Memory estimate
+      const rowMem = rows.length * headers.length * 20; // rough estimate
+      testResults.textContent += `\nEstimated memory usage: ~${fmtB(rowMem)}\n`;
+
+      testResults.textContent += `\n═══════════════════════════════════════\n`;
+      testResults.textContent += `Test complete!\n`;
+
+      // Cleanup
+      rows.length = 0;
+    });
+  });
+
 })();
 </script>
 </body>
