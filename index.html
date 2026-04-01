@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DataForge — Conversor Universal de Dados</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --surface: #12121a;
+    --surface-2: #1a1a26;
+    --border: #2a2a3d;
+    --border-active: #4a4a6a;
+    --text: #e8e8f0;
+    --text-dim: #8888aa;
+    --text-muted: #555570;
+    --accent: #6c5ce7;
+    --accent-glow: #7c6cf7;
+    --accent-dim: rgba(108, 92, 231, 0.15);
+    --success: #00cec9;
+    --success-dim: rgba(0, 206, 201, 0.15);
+    --error: #ff6b6b;
+    --error-dim: rgba(255, 107, 107, 0.15);
+    --radius: 10px;
+    --mono: 'JetBrains Mono', monospace;
+    --sans: 'DM Sans', sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: var(--sans); background: var(--bg);
+    color: var(--text); min-height: 100vh; overflow-x: hidden;
+  }
+  body::before {
+    content: ''; position: fixed; inset: 0;
+    background-image:
+      linear-gradient(rgba(108,92,231,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(108,92,231,0.03) 1px, transparent 1px);
+    background-size: 40px 40px; pointer-events: none; z-index: 0;
+  }
+  .app { position: relative; z-index: 1; max-width: 720px; margin: 0 auto; padding: 40px 20px 60px; }
+  .header { text-align: center; margin-bottom: 40px; }
+  .logo {
+    font-family: var(--mono); font-size: 13px; font-weight: 600;
+    letter-spacing: 4px; text-transform: uppercase; color: var(--accent);
+    margin-bottom: 12px; display: flex; align-items: center; justify-content: center; gap: 10px;
+  }
+  .logo-icon {
+    width: 28px; height: 28px; border: 2px solid var(--accent);
+    border-radius: 6px; display: grid; place-items: center; font-size: 14px;
+  }
+  .header h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+  .header p { color: var(--text-dim); font-size: 14px; line-height: 1.5; }
+  .badge {
+    display: inline-block; font-family: var(--mono); font-size: 10px; font-weight: 500;
+    letter-spacing: 1px; padding: 4px 10px; border-radius: 20px;
+    background: var(--accent-dim); color: var(--accent-glow);
+    border: 1px solid rgba(108,92,231,0.2); margin-top: 12px;
+  }
+  .datasus-badge { background: var(--success-dim); color: var(--success); border-color: rgba(0,206,201,0.2); margin-left: 6px; }
+  .drop-zone {
+    border: 2px dashed var(--border); border-radius: var(--radius);
+    padding: 48px 24px; text-align: center; cursor: pointer;
+    transition: all 0.25s ease; background: var(--surface);
+    position: relative; overflow: hidden;
+  }
+  .drop-zone::before {
+    content: ''; position: absolute; inset: 0;
+    background: radial-gradient(ellipse at center, var(--accent-dim), transparent 70%);
+    opacity: 0; transition: opacity 0.3s;
+  }
+  .drop-zone:hover, .drop-zone.drag-over { border-color: var(--accent); background: var(--surface-2); }
+  .drop-zone:hover::before, .drop-zone.drag-over::before { opacity: 1; }
+  .drop-icon { font-size: 36px; margin-bottom: 12px; position: relative; }
+  .drop-zone h3 { font-size: 16px; font-weight: 600; margin-bottom: 6px; position: relative; }
+  .drop-zone p { font-size: 12px; color: var(--text-muted); font-family: var(--mono); position: relative; line-height: 1.6; }
+  .drop-zone input[type="file"] { display: none; }
+  .file-section { margin-top: 20px; }
+  .file-section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; padding: 0 2px; }
+  .file-count { font-family: var(--mono); font-size: 12px; color: var(--text-dim); }
+  .total-size { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+  .total-size .limit { color: var(--text-dim); }
+  .file-list { display: flex; flex-direction: column; gap: 6px; }
+  .file-item {
+    display: flex; align-items: center; gap: 12px; padding: 10px 14px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px; transition: all 0.2s;
+  }
+  .file-item:hover { border-color: var(--border-active); }
+  .file-ext {
+    font-family: var(--mono); font-size: 10px; font-weight: 600;
+    letter-spacing: 0.5px; text-transform: uppercase;
+    padding: 4px 8px; border-radius: 4px;
+    background: var(--accent-dim); color: var(--accent-glow);
+    min-width: 48px; text-align: center;
+  }
+  .file-ext.ext-datasus { background: var(--success-dim); color: var(--success); }
+  .file-name { flex: 1; font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .file-size { font-family: var(--mono); font-size: 11px; color: var(--text-muted); flex-shrink: 0; }
+  .file-remove {
+    background: none; border: none; color: var(--text-muted);
+    cursor: pointer; font-size: 16px; padding: 2px 6px;
+    border-radius: 4px; transition: all 0.15s; line-height: 1;
+  }
+  .file-remove:hover { background: var(--error-dim); color: var(--error); }
+  .clear-all {
+    background: none; border: none; color: var(--text-muted);
+    font-family: var(--mono); font-size: 11px; cursor: pointer;
+    padding: 4px 8px; border-radius: 4px; transition: all 0.15s;
+  }
+  .clear-all:hover { color: var(--error); background: var(--error-dim); }
+  .controls { margin-top: 24px; display: flex; gap: 12px; align-items: stretch; }
+  .format-select-wrapper { flex: 1; position: relative; }
+  .format-select-wrapper label {
+    position: absolute; top: -7px; left: 12px;
+    font-family: var(--mono); font-size: 10px; color: var(--text-muted);
+    background: var(--bg); padding: 0 6px; letter-spacing: 0.5px;
+    text-transform: uppercase; z-index: 1;
+  }
+  .format-select {
+    width: 100%; height: 100%; min-height: 48px; padding: 0 40px 0 16px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; color: var(--text);
+    font-family: var(--mono); font-size: 13px; font-weight: 500;
+    cursor: pointer; appearance: none; transition: border-color 0.2s;
+  }
+  .format-select:hover, .format-select:focus { border-color: var(--accent); outline: none; }
+  .format-select-wrapper::after {
+    content: '▾'; position: absolute; right: 14px; top: 50%;
+    transform: translateY(-50%); color: var(--text-muted); pointer-events: none;
+  }
+  .format-select optgroup { color: var(--text-dim); font-style: normal; }
+  .format-select option { color: var(--text); background: var(--surface); }
+  .convert-btn {
+    padding: 0 28px; min-height: 48px; background: var(--accent);
+    color: #fff; border: none; border-radius: 8px;
+    font-family: var(--sans); font-size: 14px; font-weight: 600;
+    cursor: pointer; transition: all 0.2s; white-space: nowrap;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .convert-btn:hover:not(:disabled) {
+    background: var(--accent-glow); transform: translateY(-1px);
+    box-shadow: 0 4px 20px rgba(108,92,231,0.3);
+  }
+  .convert-btn:active:not(:disabled) { transform: translateY(0); }
+  .convert-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .convert-btn.processing { pointer-events: none; }
+  .convert-btn .spinner {
+    display: none; width: 16px; height: 16px;
+    border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff;
+    border-radius: 50%; animation: spin 0.6s linear infinite;
+  }
+  .convert-btn.processing .spinner { display: block; }
+  .convert-btn.processing .btn-text { display: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .results { margin-top: 20px; display: flex; flex-direction: column; gap: 4px; }
+  .result-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px; border-radius: 8px;
+    font-size: 13px; font-family: var(--mono);
+    animation: slideIn 0.25s ease; flex-wrap: wrap;
+  }
+  @keyframes slideIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; } }
+  .result-item.success { background: var(--success-dim); border: 1px solid rgba(0,206,201,0.2); color: var(--success); }
+  .result-item.error { background: var(--error-dim); border: 1px solid rgba(255,107,107,0.2); color: var(--error); }
+  .result-icon { font-size: 14px; flex-shrink: 0; }
+  .result-from { color: var(--text-dim); }
+  .result-arrow { color: var(--text-muted); font-size: 11px; }
+  .result-to { font-weight: 600; }
+  .result-meta { margin-left: auto; font-size: 10px; opacity: 0.7; flex-shrink: 0; }
+  .result-error-msg { margin-left: auto; font-size: 11px; max-width: 260px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .footer-info {
+    margin-top: 32px; padding: 16px; background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; text-align: center;
+  }
+  .footer-stat { display: flex; flex-direction: column; gap: 4px; }
+  .footer-stat .val { font-family: var(--mono); font-size: 18px; font-weight: 700; color: var(--accent-glow); }
+  .footer-stat .lbl { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  @media (max-width: 600px) {
+    .app { padding: 24px 16px 40px; }
+    .controls { flex-direction: column; }
+    .convert-btn { justify-content: center; }
+    .footer-info { grid-template-columns: 1fr; gap: 12px; }
+    .header h1 { font-size: 22px; }
+  }
+  .file-section[data-empty="true"] { display: none; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="header">
+    <div class="logo"><div class="logo-icon">⚡</div> DATAFORGE</div>
+    <h1>Conversor Universal de Dados</h1>
+    <p>Arraste seus arquivos, escolha o formato de saída e baixe tudo em um ZIP.<br>100% no navegador — nenhum dado sai da sua máquina.</p>
+    <span class="badge">✦ Zero servidor · Zero upload · Privacidade total</span>
+    <span class="badge datasus-badge">♦ Suporte DBC / DBF (DATASUS)</span>
+  </header>
+
+  <div class="drop-zone" id="dropZone">
+    <div class="drop-icon">📂</div>
+    <h3>Arraste arquivos aqui ou clique para selecionar</h3>
+    <p>CSV · TSV · XLSX · XLS · JSON · JSONL · XML · ODS · DBF · DBC<br>até 100 MB no total</p>
+    <input type="file" id="fileInput" multiple accept=".csv,.tsv,.xlsx,.xls,.json,.jsonl,.xml,.ods,.txt,.dbf,.dbc">
+  </div>
+
+  <div class="file-section" id="fileSection" data-empty="true">
+    <div class="file-section-header">
+      <span class="file-count" id="fileCount">0 arquivos</span>
+      <span class="total-size" id="totalSize">0 KB <span class="limit">/ 100 MB</span></span>
+      <button class="clear-all" id="clearAll">limpar tudo</button>
+    </div>
+    <div class="file-list" id="fileList"></div>
+  </div>
+
+  <div class="controls">
+    <div class="format-select-wrapper">
+      <label>Formato de saída</label>
+      <select class="format-select" id="outputFormat">
+        <optgroup label="Texto / Tabular">
+          <option value="csv">CSV (Comma-Separated)</option>
+          <option value="tsv">TSV (Tab-Separated)</option>
+          <option value="xlsx">XLSX (Excel)</option>
+          <option value="json">JSON (Array of Objects)</option>
+          <option value="jsonl">JSONL (JSON Lines)</option>
+          <option value="xml">XML</option>
+          <option value="md">Markdown Table</option>
+          <option value="sql">SQL INSERT Statements</option>
+        </optgroup>
+        <optgroup label="Legado / DATASUS">
+          <option value="dbf">DBF (dBase III)</option>
+        </optgroup>
+      </select>
+    </div>
+    <button class="convert-btn" id="convertBtn" disabled>
+      <span class="btn-text">Converter &amp; Baixar ZIP</span>
+      <span class="spinner"></span>
+    </button>
+  </div>
+
+  <div class="results" id="results"></div>
+
+  <div class="footer-info">
+    <div class="footer-stat"><span class="val">10</span><span class="lbl">Formatos de Entrada</span></div>
+    <div class="footer-stat"><span class="val">9</span><span class="lbl">Formatos de Saída</span></div>
+    <div class="footer-stat"><span class="val">0ms</span><span class="lbl">Latência de Rede</span></div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════
+// BLAST DECOMPRESSOR — Faithful port of Mark Adler's blast.c v1.2
+// PKWare Data Compression Library (DCL Implode) decompressor
+// Used by DATASUS .dbc files
+// ═══════════════════════════════════════════════════════════════════
+const Blast = (function() {
+  'use strict';
+
+  const MAXBITS = 13;
+  const MAXWIN  = 4096;
+
+  // Base lengths and extra bits for length codes (from blast.c)
+  const BASE  = [3,2,4,5,6,7,8,9,10,12,16,24,40,72,136,264];
+  const EXTRA = [0,0,0,0,0,0,0,0, 1, 2, 3, 4, 5, 6,  7,  8];
+
+  // Compact repeat-count encoded bit lengths (directly from blast.c)
+  // Format: high nibble + 1 = repeat count, low nibble = bit length
+  const LITLEN_COMPACT = [
+    11,124,8,7,28,7,188,13,76,4,10,8,12,10,12,10,8,23,8,
+    9,7,6,7,8,7,6,55,8,23,24,12,11,7,9,11,12,6,7,22,5,
+    7,24,6,11,9,6,7,22,7,11,38,7,9,8,25,11,8,11,9,12,
+    8,12,5,38,5,38,5,11,7,5,6,21,6,10,53,8,7,24,10,27,
+    44,253,253,253,252,252,252,13,12,45,12,45,12,61,12,45,
+    44,173
+  ];
+  const LENLEN_COMPACT  = [2, 35, 36, 53, 38, 23];
+  const DISTLEN_COMPACT = [2, 20, 53, 230, 247, 151, 248];
+
+  /** Expand compact repeat-count encoding → bit-length array */
+  function expand(compact) {
+    const out = [];
+    for (const b of compact) {
+      const cnt = (b >> 4) + 1;
+      const len = b & 0x0F;
+      for (let i = 0; i < cnt; i++) out.push(len);
+    }
+    return out;
+  }
+
+  /** Build Huffman decode table from expanded bit-length array */
+  function construct(lengths) {
+    const n = lengths.length;
+    const count  = new Int32Array(MAXBITS + 1);
+    const symbol = new Int32Array(n);
+
+    for (let i = 0; i < n; i++) count[lengths[i]]++;
+
+    const offs = new Int32Array(MAXBITS + 1);
+    for (let i = 1; i < MAXBITS; i++) offs[i + 1] = offs[i] + count[i];
+
+    for (let sym = 0; sym < n; sym++)
+      if (lengths[sym] !== 0) symbol[offs[lengths[sym]]++] = sym;
+
+    return { count, symbol };
+  }
+
+  // Pre-build tables (matches blast.c static tables)
+  const litcode  = construct(expand(LITLEN_COMPACT));
+  const lencode  = construct(expand(LENLEN_COMPACT));
+  const distcode = construct(expand(DISTLEN_COMPACT));
+
+  /** Read `need` bits from stream (LSB-first, matches blast.c bits()) */
+  function bits(s, need) {
+    let val = s.bitbuf;
+    while (s.bitcnt < need) {
+      if (s.inpos >= s.input.length) throw new Error('Blast: fim inesperado dos dados');
+      val |= s.input[s.inpos++] << s.bitcnt;
+      s.bitcnt += 8;
+    }
+    s.bitbuf = val >> need;
+    s.bitcnt -= need;
+    return val & ((1 << need) - 1);
+  }
+
+  /**
+   * Decode one Huffman symbol.
+   * CRITICAL: bits are INVERTED (XOR 1) per PKWare format — blast.c line:
+   *   code |= (bitbuf & 1) ^ 1;
+   */
+  function decode(s, h) {
+    let bitbuf = s.bitbuf;
+    let left   = s.bitcnt;
+    let code = 0, first = 0, index = 0, len = 1;
+    let next = 1; // h.count index, starts at count[1]
+
+    while (true) {
+      while (left--) {
+        code |= (bitbuf & 1) ^ 1;   // ← INVERT BIT (PKWare format)
+        bitbuf >>= 1;
+        const cnt = h.count[next++];
+        if (code < first + cnt) {
+          s.bitbuf = bitbuf;
+          s.bitcnt = (s.bitcnt - len) & 7;
+          return h.symbol[index + (code - first)];
+        }
+        index += cnt;
+        first += cnt;
+        first <<= 1;
+        code <<= 1;
+        len++;
+      }
+      left = (MAXBITS + 1) - len;
+      if (left === 0) break;
+      if (s.inpos >= s.input.length) throw new Error('Blast: fim inesperado dos dados');
+      bitbuf = s.input[s.inpos++];
+      if (left > 8) left = 8;
+    }
+    throw new Error('Blast: código Huffman incompleto');
+  }
+
+  /**
+   * Decompress PKWare DCL Implode stream.
+   * Uses 4 KB sliding window (matches blast.c MAXWIN).
+   * @param {Uint8Array} input
+   * @returns {Uint8Array}
+   */
+  function decompress(input) {
+    const s = { input, inpos: 0, bitbuf: 0, bitcnt: 0 };
+
+    // Header
+    const lit  = bits(s, 8);
+    const dict = bits(s, 8);
+    if (lit > 1) throw new Error('Blast: flag literal inválido (' + lit + ')');
+    if (dict < 4 || dict > 6) throw new Error('Blast: dict inválido (' + dict + ')');
+
+    // Output with sliding window
+    const win = new Uint8Array(MAXWIN);
+    let wnext  = 0;
+    let wfirst = true;
+    const chunks = [];
+
+    function flush() {
+      if (wnext > 0) {
+        chunks.push(win.slice(0, wnext));
+        wnext  = 0;
+        wfirst = false;
+      }
+    }
+
+    // Main decode loop
+    while (true) {
+      if (bits(s, 1)) {
+        // ── Length/Distance pair ──
+        const sym = decode(s, lencode);
+        const len = BASE[sym] + bits(s, EXTRA[sym]);
+        if (len === 519) break;  // End-of-stream marker
+
+        const distBits = len === 2 ? 2 : dict;
+        let dist = decode(s, distcode) << distBits;
+        dist += bits(s, distBits);
+        dist++;
+
+        // Copy from sliding window (matching blast.c decomp() logic)
+        let remaining = len;
+        do {
+          let from, copy;
+          const to = wnext;
+
+          if (wnext >= dist) {
+            from = wnext - dist;
+            copy = MAXWIN - wnext;
+          } else {
+            from = MAXWIN + wnext - dist;
+            copy = dist - wnext;
+            if (copy > MAXWIN - from) copy = MAXWIN - from;
+          }
+
+          if (copy > remaining) copy = remaining;
+          remaining -= copy;
+          wnext += copy;
+
+          for (let i = 0; i < copy; i++) win[to + i] = win[from + i];
+
+          if (wnext === MAXWIN) flush();
+        } while (remaining > 0);
+      } else {
+        // ── Literal byte ──
+        win[wnext++] = lit ? decode(s, litcode) : bits(s, 8);
+        if (wnext === MAXWIN) flush();
+      }
+    }
+
+    // Flush remaining
+    flush();
+
+    // Concatenate chunks
+    let total = 0;
+    for (const c of chunks) total += c.length;
+    const result = new Uint8Array(total);
+    let off = 0;
+    for (const c of chunks) { result.set(c, off); off += c.length; }
+    return result;
+  }
+
+  return { decompress };
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════
+// DBF PARSER & WRITER — dBase III/IV/V
+// ═══════════════════════════════════════════════════════════════════
+const DBF = (function() {
+  'use strict';
+  const dec = new TextDecoder('windows-1252');
+  const enc = new TextEncoder();
+
+  function parse(buf) {
+    const d = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+    const v = new DataView(d.buffer, d.byteOffset, d.byteLength);
+    if (d.length < 32) throw new Error('DBF: arquivo muito pequeno');
+
+    const numRec   = v.getUint32(4, true);
+    const hdrLen   = v.getUint16(8, true);
+    const recLen   = v.getUint16(10, true);
+
+    // Parse field descriptors
+    const fields = [];
+    let off = 32;
+    while (off + 32 <= hdrLen && d[off] !== 0x0D) {
+      let ne = off;
+      while (ne < off + 11 && d[ne] !== 0) ne++;
+      const name = dec.decode(d.slice(off, ne)).trim();
+      const type = String.fromCharCode(d[off + 11]);
+      const flen = d[off + 16];
+      const fdec = d[off + 17];
+      if (name && flen > 0) fields.push({ name, type, length: flen, decimal: fdec });
+      off += 32;
+    }
+    if (fields.length === 0) throw new Error('DBF: nenhum campo encontrado');
+
+    // Parse records
+    const records = [];
+    let roff = hdrLen;
+    const max = Math.min(numRec, 10_000_000);
+
+    for (let r = 0; r < max; r++) {
+      if (roff + 1 > d.length) break;
+      const flag = d[roff];
+      if (flag === 0x1A) break;
+      roff++;
+
+      if (flag === 0x2A) { roff += recLen - 1; continue; } // deleted
+
+      const rec = {};
+      for (const f of fields) {
+        if (roff + f.length > d.length) { roff = d.length; break; }
+        const raw = dec.decode(d.slice(roff, roff + f.length)).trim();
+        roff += f.length;
+        switch (f.type) {
+          case 'N': case 'F':
+            if (raw === '' || /^\*+$/.test(raw)) rec[f.name] = null;
+            else { const n = parseFloat(raw); rec[f.name] = isNaN(n) ? raw : n; }
+            break;
+          case 'L':
+            rec[f.name] = 'TtYy1'.includes(raw) ? true : 'FfNn0'.includes(raw) ? false : null;
+            break;
+          case 'D':
+            rec[f.name] = (raw.length === 8 && raw.trim()) ?
+              raw.slice(0,4)+'-'+raw.slice(4,6)+'-'+raw.slice(6,8) : (raw || null);
+            break;
+          default:
+            rec[f.name] = raw;
+        }
+      }
+      records.push(rec);
+    }
+    return { fields, records };
+  }
+
+  function write(records) {
+    if (!records || !records.length) throw new Error('DBF: nenhum registro');
+
+    const keys = []; const ks = new Set();
+    for (const r of records) for (const k of Object.keys(r)) { if (!ks.has(k)) { ks.add(k); keys.push(k); } }
+
+    const fields = keys.map(name => {
+      let ml = 1, allN = true, maxD = 0;
+      for (const r of records) {
+        const v = r[name]; if (v == null || v === '') continue;
+        const s = String(v), bl = enc.encode(s).length;
+        if (bl > ml) ml = bl;
+        if (allN && isNaN(Number(v))) allN = false;
+        if (allN && s.includes('.')) { const dd = (s.split('.')[1]||'').length; if (dd > maxD) maxD = dd; }
+      }
+      if (allN && ml <= 18) return { name: name.slice(0,10), type: 'N', length: Math.min(Math.max(ml, maxD+2, 1), 18), decimal: Math.min(maxD, 15), src: name };
+      return { name: name.slice(0,10), type: 'C', length: Math.min(Math.max(ml,1), 254), decimal: 0, src: name };
+    });
+
+    const hLen = 32 + fields.length * 32 + 1;
+    const rLen = 1 + fields.reduce((s, f) => s + f.length, 0);
+    const buf = new Uint8Array(hLen + records.length * rLen + 1);
+    const dv = new DataView(buf.buffer);
+    const now = new Date();
+    buf[0] = 0x03; buf[1] = now.getFullYear()-1900; buf[2] = now.getMonth()+1; buf[3] = now.getDate();
+    dv.setUint32(4, records.length, true);
+    dv.setUint16(8, hLen, true);
+    dv.setUint16(10, rLen, true);
+
+    let o = 32;
+    for (const f of fields) { buf.set(enc.encode(f.name).slice(0,11), o); buf[o+11]=f.type.charCodeAt(0); buf[o+16]=f.length; buf[o+17]=f.decimal; o+=32; }
+    buf[o] = 0x0D;
+
+    let ro = hLen;
+    for (const rec of records) {
+      buf[ro++] = 0x20;
+      for (const f of fields) {
+        let v = rec[f.src]; if (v == null) v = '';
+        let s = String(v);
+        s = f.type === 'N' ? s.slice(0,f.length).padStart(f.length,' ') : s.slice(0,f.length).padEnd(f.length,' ');
+        const bytes = enc.encode(s);
+        for (let i = 0; i < f.length; i++) buf[ro+i] = i < bytes.length ? bytes[i] : 0x20;
+        ro += f.length;
+      }
+    }
+    buf[ro] = 0x1A;
+    return buf;
+  }
+
+  return { parse, write };
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════
+// DBC (DATASUS) — DBF header (plain) + 4-byte CRC32 + Blast-compressed records
+// Format documented in dbc2dbf.c by Daniela Petruzalek
+// ═══════════════════════════════════════════════════════════════════
+const DBC = (function() {
+  'use strict';
+
+  function parse(data) {
+    const buf = data instanceof Uint8Array ? data : new Uint8Array(data);
+    if (buf.length < 32) throw new Error('DBC: arquivo muito pequeno');
+
+    const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    const headerLen = view.getUint16(8, true);
+
+    if (headerLen < 32 || headerLen > buf.length - 4) {
+      throw new Error('DBC: header length inválido (' + headerLen + ')');
+    }
+
+    // Header = unmodified DBF header (bytes 0..headerLen-1)
+    // CRC32  = bytes headerLen..headerLen+3 (skipped)
+    // Blast  = bytes headerLen+4..end (compressed record data)
+    const compressedStart = headerLen + 4;
+    if (compressedStart >= buf.length) {
+      throw new Error('DBC: sem dados comprimidos após o header');
+    }
+
+    const compressed = buf.slice(compressedStart);
+    const decompressed = Blast.decompress(compressed);
+
+    // Reconstruct full DBF: header + decompressed records
+    const header = buf.slice(0, headerLen);
+    const dbfBuf = new Uint8Array(header.length + decompressed.length);
+    dbfBuf.set(header);
+    dbfBuf.set(decompressed, header.length);
+
+    return DBF.parse(dbfBuf);
+  }
+
+  return { parse };
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════
+// MAIN APPLICATION
+// ═══════════════════════════════════════════════════════════════════
+(function() {
+  'use strict';
+
+  let files = [];
+  const MAX = 100 * 1024 * 1024;
+  const SUP = new Set(['csv','tsv','xlsx','xls','json','jsonl','xml','ods','txt','dbf','dbc']);
+
+  const $ = id => document.getElementById(id);
+  const dropZone = $('dropZone'), fileInput = $('fileInput'), fileSection = $('fileSection');
+  const fileList = $('fileList'), fileCount = $('fileCount'), totalSizeEl = $('totalSize');
+  const clearAll = $('clearAll'), outputFmt = $('outputFormat');
+  const convertBtn = $('convertBtn'), resultsEl = $('results');
+
+  const fmtB = b => b < 1024 ? b+' B' : b < 1048576 ? (b/1024).toFixed(1)+' KB' : (b/1048576).toFixed(1)+' MB';
+  const ext  = n => (n.split('.').pop()||'').toLowerCase();
+  const base = n => { const p = n.split('.'); p.pop(); return p.join('.')||n; };
+
+  // ── Drop zone ──
+  dropZone.addEventListener('click', () => fileInput.click());
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('drag-over'); add(e.dataTransfer.files); });
+  fileInput.addEventListener('change', () => { add(fileInput.files); fileInput.value = ''; });
+  clearAll.addEventListener('click', () => { files = []; render(); resultsEl.innerHTML = ''; });
+
+  function add(list) {
+    for (const f of list) {
+      if (!SUP.has(ext(f.name))) continue;
+      if (files.some(x => x.name === f.name && x.size === f.size)) continue;
+      files.push(f);
+    }
+    render();
+  }
+
+  function render() {
+    const empty = !files.length;
+    fileSection.setAttribute('data-empty', empty);
+    convertBtn.disabled = empty;
+    fileCount.textContent = files.length + ' arquivo' + (files.length !== 1 ? 's' : '');
+    const tot = files.reduce((s, f) => s + f.size, 0);
+    totalSizeEl.innerHTML = fmtB(tot) + ' <span class="limit">/ 100 MB</span>';
+    totalSizeEl.style.color = tot > MAX ? 'var(--error)' : '';
+    if (tot > MAX) convertBtn.disabled = true;
+
+    fileList.innerHTML = '';
+    files.forEach((f, i) => {
+      const e = ext(f.name);
+      const d = document.createElement('div');
+      d.className = 'file-item';
+      d.innerHTML = `<span class="file-ext${e==='dbc'||e==='dbf'?' ext-datasus':''}">${e}</span>
+        <span class="file-name" title="${f.name}">${f.name}</span>
+        <span class="file-size">${fmtB(f.size)}</span>
+        <button class="file-remove" data-i="${i}">✕</button>`;
+      fileList.appendChild(d);
+    });
+    fileList.querySelectorAll('.file-remove').forEach(b =>
+      b.addEventListener('click', () => { files.splice(+b.dataset.i, 1); render(); }));
+  }
+
+  // ── Conversion engine ──
+  const readFile = f => new Promise((ok, fail) => {
+    const r = new FileReader();
+    r.onload = () => ok(r.result);
+    r.onerror = () => fail(new Error('Falha ao ler: ' + f.name));
+    r.readAsArrayBuffer(f);
+  });
+
+  function parseInput(buf, e) {
+    if (e === 'dbc') {
+      const { fields, records } = DBC.parse(buf);
+      const h = fields.map(f => f.name);
+      return { headers: h, rows: records.map(r => h.map(k => r[k] ?? '')), objRows: records };
+    }
+    if (e === 'dbf') {
+      const { fields, records } = DBF.parse(buf);
+      const h = fields.map(f => f.name);
+      return { headers: h, rows: records.map(r => h.map(k => r[k] ?? '')), objRows: records };
+    }
+    if (e === 'jsonl') {
+      const t = new TextDecoder('utf-8').decode(buf);
+      const d = t.trim().split('\n').filter(l => l.trim()).map((l,i) => {
+        try { return JSON.parse(l); } catch { throw new Error('JSONL: linha '+(i+1)+' inválida'); }
+      });
+      if (!d.length) throw new Error('JSONL vazio');
+      return s2i(XLSX.utils.json_to_sheet(d));
+    }
+    if (e === 'json') {
+      let p = JSON.parse(new TextDecoder('utf-8').decode(buf));
+      if (!Array.isArray(p)) { const k = Object.keys(p).find(k => Array.isArray(p[k])); p = k ? p[k] : [p]; }
+      if (!p.length) throw new Error('JSON vazio');
+      return s2i(XLSX.utils.json_to_sheet(p));
+    }
+    const opts = { type: 'array', raw: true, cellDates: true };
+    if (e === 'csv' || e === 'txt') opts.FS = ',';
+    if (e === 'tsv') opts.FS = '\t';
+    const wb = XLSX.read(new Uint8Array(buf), opts);
+    if (!wb.SheetNames.length) throw new Error('Nenhuma planilha encontrada');
+    return s2i(wb.Sheets[wb.SheetNames[0]]);
+  }
+
+  function s2i(ws) {
+    const raw = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+    const h = (raw[0]||[]).map(String);
+    return { headers: h, rows: raw.slice(1), objRows: XLSX.utils.sheet_to_json(ws, { raw: true, defval: '' }) };
+  }
+
+  function toOutput(data, fmt, orig) {
+    const { headers, rows, objRows } = data;
+    const out = base(orig) + '.' + fmt;
+    const m = { rows: rows.length, cols: headers.length };
+
+    if (fmt === 'dbf') {
+      const recs = objRows || rows.map(r => { const o = {}; headers.forEach((h,i) => o[h]=r[i]??''); return o; });
+      return { name: out, blob: new Blob([DBF.write(recs)], { type: 'application/x-dbf' }), ...m };
+    }
+
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+
+    let c, t;
+    switch (fmt) {
+      case 'csv': c = XLSX.utils.sheet_to_csv(ws,{FS:',',RS:'\n'}); t='text/csv'; break;
+      case 'tsv': c = XLSX.utils.sheet_to_csv(ws,{FS:'\t',RS:'\n'}); t='text/tab-separated-values'; break;
+      case 'xlsx': {
+        const b = XLSX.write(wb,{type:'array',bookType:'xlsx'});
+        return { name: out, blob: new Blob([b],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}), ...m };
+      }
+      case 'json': c = JSON.stringify(objRows||[],null,2); t='application/json'; break;
+      case 'jsonl': c = (objRows||[]).map(r=>JSON.stringify(r)).join('\n'); t='application/x-jsonlines'; break;
+      case 'xml': {
+        let x = '<?xml version="1.0" encoding="UTF-8"?>\n<records>\n';
+        for (const row of (objRows||[])) {
+          x += '  <record>\n';
+          for (const [k,v] of Object.entries(row)) {
+            const tag = String(k).replace(/[^a-zA-Z0-9_]/g,'_').replace(/^(\d)/,'_$1');
+            x += '    <'+tag+'>'+String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</'+tag+'>\n';
+          }
+          x += '  </record>\n';
+        }
+        c = x + '</records>'; t='application/xml'; break;
+      }
+      case 'md': {
+        if (!headers.length) { c='*(vazio)*'; t='text/markdown'; break; }
+        let md = '| '+headers.join(' | ')+' |\n| '+headers.map(()=>'---').join(' | ')+' |\n';
+        for (const r of rows) md += '| '+headers.map((_,i)=>String(r[i]??'').replace(/\|/g,'\\|')).join(' | ')+' |\n';
+        c = md; t='text/markdown'; break;
+      }
+      case 'sql': {
+        const tbl = base(orig).replace(/[^a-zA-Z0-9_]/g,'_');
+        const cols = headers.map(h=>'"'+String(h).replace(/"/g,'""')+'"');
+        let sql = '-- DataForge\n-- Tabela: '+tbl+'\n\n';
+        for (const r of rows) {
+          const vals = headers.map((_,i)=>{ const v=r[i]; if(v==null||v==='')return'NULL'; if(v instanceof Date)return"'"+v.toISOString()+"'"; if(typeof v==='number')return v; return"'"+String(v).replace(/'/g,"''")+"'"; });
+          sql += 'INSERT INTO "'+tbl+'" ('+cols.join(', ')+') VALUES ('+vals.join(', ')+');\n';
+        }
+        c = sql; t='application/sql'; break;
+      }
+      default: throw new Error('Formato não suportado: '+fmt);
+    }
+    return { name: out, blob: new Blob([c],{type:t}), ...m };
+  }
+
+  // ── Convert ──
+  convertBtn.addEventListener('click', async () => {
+    if (!files.length) return;
+    convertBtn.classList.add('processing');
+    resultsEl.innerHTML = '';
+
+    const fmt = outputFmt.value;
+    const zip = new JSZip();
+    const summary = [];
+    let ok = 0;
+
+    for (const f of files) {
+      const e = ext(f.name);
+      try {
+        const buf = await readFile(f);
+        const data = parseInput(buf, e);
+        const out = toOutput(data, fmt, f.name);
+        zip.file(out.name, out.blob);
+        summary.push({ input: f.name, output: out.name, status: 'ok', rows: out.rows, cols: out.cols });
+        ok++;
+        addResult(true, f.name, out.name, out.rows+' linhas · '+out.cols+' colunas');
+      } catch (err) {
+        const msg = err.message || 'Erro desconhecido';
+        summary.push({ input: f.name, output: null, status: 'error', error: msg });
+        addResult(false, f.name, null, msg);
+      }
+    }
+
+    zip.file('conversion_summary.json', JSON.stringify({ generated: new Date().toISOString(), target_format: fmt, files: summary }, null, 2));
+
+    if (ok > 0) {
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url;
+      a.download = 'dataforge_'+fmt+'_'+Date.now()+'.zip';
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    }
+    convertBtn.classList.remove('processing');
+  });
+
+  function addResult(ok, from, to, detail) {
+    const d = document.createElement('div');
+    d.className = 'result-item '+(ok ? 'success' : 'error');
+    d.innerHTML = ok
+      ? '<span class="result-icon">✓</span><span class="result-from">'+from+'</span><span class="result-arrow">→</span><span class="result-to">'+to+'</span><span class="result-meta">'+detail+'</span>'
+      : '<span class="result-icon">✗</span><span class="result-from">'+from+'</span><span class="result-error-msg" title="'+detail+'">'+detail+'</span>';
+    resultsEl.appendChild(d);
+  }
+})();
+</script>
+</body>
+</html>
