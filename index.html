@@ -1051,11 +1051,18 @@ const DBC = (function() {
         const b = XLSX.write(wb,{type:'array',bookType:'xlsx'});
         return { name: out, blob: new Blob([b],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}), ...m };
       }
-      case 'json': c = JSON.stringify(objRows||[],null,2); t='application/json'; break;
-      case 'jsonl': c = (objRows||[]).map(r=>JSON.stringify(r)).join('\n'); t='application/x-jsonlines'; break;
+      case 'json': {
+        const recs = objRows || rows.map(r => { const o = {}; headers.forEach((h,i) => o[h]=r[i]??''); return o; });
+        c = JSON.stringify(recs,null,2); t='application/json'; break;
+      }
+      case 'jsonl': {
+        const recs = objRows || rows.map(r => { const o = {}; headers.forEach((h,i) => o[h]=r[i]??''); return o; });
+        c = recs.map(r=>JSON.stringify(r)).join('\n'); t='application/x-jsonlines'; break;
+      }
       case 'xml': {
+        const recs = objRows || rows.map(r => { const o = {}; headers.forEach((h,i) => o[h]=r[i]??''); return o; });
         let x = '<?xml version="1.0" encoding="UTF-8"?>\n<records>\n';
-        for (const row of (objRows||[])) {
+        for (const row of recs) {
           x += '  <record>\n';
           for (const [k,v] of Object.entries(row)) {
             const tag = String(k).replace(/[^a-zA-Z0-9_]/g,'_').replace(/^(\d)/,'_$1');
@@ -1099,6 +1106,7 @@ const DBC = (function() {
     if (isMerge) {
       // Merge mode
       try {
+        const outHeaders = mergeMapping.map(m => m.outputCol).concat(['_source_file']);
         const allRows = [];
         const fileSummary = [];
 
@@ -1109,30 +1117,26 @@ const DBC = (function() {
 
           let rowCount = 0;
           for (const srcRow of data.objRows) {
-            const newRow = {};
+            const newRow = [];
             for (const m of mergeMapping) {
               const srcCol = m.sources[f.name];
-              newRow[m.outputCol] = srcCol ? (srcRow[srcCol] ?? '') : '';
+              newRow.push(srcCol ? (srcRow[srcCol] ?? '') : '');
             }
-            newRow['_source_file'] = f.name;
+            newRow.push(f.name); // _source_file
             allRows.push(newRow);
             rowCount++;
           }
           fileSummary.push({ input: f.name, rows_contributed: rowCount });
         }
 
-        // Build headers and rows
-        const outHeaders = mergeMapping.map(m => m.outputCol).concat(['_source_file']);
-        const outRows = allRows.map(r => outHeaders.map(h => r[h] ?? ''));
-
-        const outData = { headers: outHeaders, rows: outRows, objRows: allRows };
+        const outData = { headers: outHeaders, rows: allRows, objRows: null };
         const out = toOutput(outData, fmt, 'merged');
         zip.file(out.name, out.blob);
 
-        // Build column mapping for summary
+        // Build column mapping for summary (simple copy)
         const colMapping = {};
         for (const m of mergeMapping) {
-          colMapping[m.outputCol] = m.sources;
+          colMapping[m.outputCol] = Object.assign({}, m.sources);
         }
 
         zip.file('conversion_summary.json', JSON.stringify({
