@@ -1047,18 +1047,43 @@ const DBC = (function() {
           const buf = await readFile(f);
           const data = parseInput(buf, e);
 
+          // Build column index map for this file (header name -> index)
+          const colIndex = new Map();
+          data.headers.forEach((h, i) => colIndex.set(h, i));
+
+          // Process rows using arrays (not objects) for efficiency
           let rowCount = 0;
-          for (const srcRow of data.objRows) {
+          const totalDataRows = data.rows.length;
+
+          for (let ri = 0; ri < totalDataRows; ri++) {
+            const srcRow = data.rows[ri];
             const newRow = [];
+
             for (const m of mergeMapping) {
               const srcCol = m.sources[f.name];
-              newRow.push(srcCol ? (srcRow[srcCol] ?? '') : '');
+              if (srcCol && colIndex.has(srcCol)) {
+                newRow.push(srcRow[colIndex.get(srcCol)] ?? '');
+              } else {
+                newRow.push('');
+              }
             }
             newRow.push(f.name);
             allRows.push(newRow);
             rowCount++;
+
+            // Yield every 10000 rows to prevent UI freeze
+            if (ri > 0 && ri % 10000 === 0) {
+              showProgress(Math.round((fi / files.length * 30) + (ri / totalDataRows * 20 / files.length)), `Processing ${f.name}: ${ri.toLocaleString()} rows...`);
+              await yieldToUI();
+            }
           }
+
           fileSummary.push({ input: f.name, rows_contributed: rowCount });
+
+          // Clear data to free memory
+          data.rows.length = 0;
+          data.headers.length = 0;
+          if (data.objRows) data.objRows.length = 0;
         }
 
         const tier = getTier(allRows.length);
