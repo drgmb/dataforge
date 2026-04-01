@@ -579,7 +579,7 @@ const DBC = (function() {
 
   // ── Column matching ──
   function norm(name) {
-    return name.normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/([a-z])([A-Z])/g,'$1_$2').replace(/[-\s_.]+/g,'').toLowerCase();
+    return name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[-\s_.]+/g, '').toLowerCase(); // fix: removed no-op camelCase split
   }
   function dice(a, b) {
     if (a.length < 2 || b.length < 2) return a === b ? 1 : 0;
@@ -643,7 +643,7 @@ const DBC = (function() {
       const e = ext(f.name);
       const d = document.createElement('div');
       d.className = 'file-item';
-      d.innerHTML = `<span class="file-ext">${e}</span><span class="file-name" title="${f.name}">${f.name}</span><span class="file-size">${fmtB(f.size)}</span><button class="file-remove" data-i="${i}">&times;</button>`;
+      d.innerHTML = `<span class="file-ext">${escHtml(e)}</span><span class="file-name" title="${escHtml(f.name)}">${escHtml(f.name)}</span><span class="file-size">${fmtB(f.size)}</span><button class="file-remove" data-i="${i}">&times;</button>`; // fix: XSS via filename
       fileList.appendChild(d);
     });
     fileList.querySelectorAll('.file-remove').forEach(b => b.addEventListener('click', () => { files.splice(+b.dataset.i, 1); parsedFiles = parsedFiles.filter(pf => files.some(f => f.name === pf.file.name)); render(); if (mergeToggle.checked) updateMergePanel(); }));
@@ -712,7 +712,7 @@ const DBC = (function() {
     if (e === 'dbc') { const { fields, records } = DBC.parse(buf); const h = fields.map(f => f.name); return { headers: h, rows: records.map(r => h.map(k => r[k] ?? '')), objRows: records }; }
     if (e === 'dbf') { const { fields, records } = DBF.parse(buf); const h = fields.map(f => f.name); return { headers: h, rows: records.map(r => h.map(k => r[k] ?? '')), objRows: records }; }
     if (e === 'jsonl') { const t = new TextDecoder('utf-8').decode(buf); const d = t.trim().split('\n').filter(l => l.trim()).map((l, i) => { try { return JSON.parse(l); } catch { throw new Error('JSONL: invalid line ' + (i + 1)); } }); if (!d.length) throw new Error('JSONL is empty'); return s2i(XLSX.utils.json_to_sheet(d)); }
-    if (e === 'json') { let p = JSON.parse(new TextDecoder('utf-8').decode(buf)); if (!Array.isArray(p)) { const k = Object.keys(p).find(k => Array.isArray(p[k])); p = k ? p[k] : [p]; } if (!p.length) throw new Error('JSON is empty'); return s2i(XLSX.utils.json_to_sheet(p)); }
+    if (e === 'json') { let p = JSON.parse(new TextDecoder('utf-8').decode(buf)); if (!Array.isArray(p)) { if (p === null || typeof p !== 'object') throw new Error('JSON: expected an array or object at root'); /* fix: guard primitive/null root */ const k = Object.keys(p).find(k => Array.isArray(p[k])); p = k ? p[k] : [p]; } if (!p.length) throw new Error('JSON is empty'); return s2i(XLSX.utils.json_to_sheet(p)); }
     const opts = { type: 'array', raw: true, cellDates: true };
     if (e === 'csv' || e === 'txt') opts.FS = ',';
     if (e === 'tsv') opts.FS = '\t';
@@ -724,7 +724,11 @@ const DBC = (function() {
   function s2i(ws) {
     const raw = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
     const h = (raw[0] || []).map(String);
-    return { headers: h, rows: raw.slice(1), objRows: XLSX.utils.sheet_to_json(ws, { raw: true, defval: '' }) };
+    return {
+      headers: h,
+      rows: raw.slice(1),
+      get objRows() { return XLSX.utils.sheet_to_json(ws, { raw: true, defval: '' }); } // fix: lazy — avoids double parse
+    };
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -1028,73 +1032,78 @@ const DBC = (function() {
       });
       const writable = await handle.createWritable();
 
-      if (fmt === 'csv' || fmt === 'tsv') {
-        const sep = fmt === 'csv' ? ',' : '\t';
-        await writable.write(rowToCSV(headers, sep));
-        for (let i = 0; i < totalRows; i += chunkSize) {
-          const chunk = rows.slice(i, i + chunkSize);
-          let chunkStr = '';
-          for (const row of chunk) chunkStr += rowToCSV(row, sep);
-          await writable.write(chunkStr);
-          onProgress(Math.min(100, Math.round((i + chunkSize) / totalRows * 100)), `Writing rows ${i + 1}-${Math.min(i + chunkSize, totalRows)} of ${totalRows}...`);
-        }
-      } else if (fmt === 'jsonl') {
-        for (let i = 0; i < totalRows; i += chunkSize) {
-          const chunk = rows.slice(i, i + chunkSize);
-          let chunkStr = '';
-          for (const row of chunk) { const obj = {}; headers.forEach((h, j) => obj[h] = row[j] ?? ''); chunkStr += JSON.stringify(obj) + '\n'; }
-          await writable.write(chunkStr);
-          onProgress(Math.min(100, Math.round((i + chunkSize) / totalRows * 100)), `Writing rows ${i + 1}-${Math.min(i + chunkSize, totalRows)} of ${totalRows}...`);
-        }
-      } else if (fmt === 'json') {
-        await writable.write('[\n');
-        let first = true;
-        for (let i = 0; i < totalRows; i += chunkSize) {
-          const chunk = rows.slice(i, i + chunkSize);
-          let chunkStr = '';
-          for (const row of chunk) { const obj = {}; headers.forEach((h, j) => obj[h] = row[j] ?? ''); chunkStr += (first ? '' : ',\n') + JSON.stringify(obj); first = false; }
-          await writable.write(chunkStr);
-          onProgress(Math.min(100, Math.round((i + chunkSize) / totalRows * 100)), `Writing rows ${i + 1}-${Math.min(i + chunkSize, totalRows)} of ${totalRows}...`);
-        }
-        await writable.write('\n]');
-      } else if (fmt === 'xml') {
-        await writable.write('<?xml version="1.0" encoding="UTF-8"?>\n<records>\n');
-        for (let i = 0; i < totalRows; i += chunkSize) {
-          const chunk = rows.slice(i, i + chunkSize);
-          let chunkStr = '';
-          for (const row of chunk) {
-            chunkStr += '  <record>\n';
-            headers.forEach((h, j) => { const tag = String(h).replace(/[^a-zA-Z0-9_]/g, '_').replace(/^(\d)/, '_$1'); const v = String(row[j] ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); chunkStr += '    <' + tag + '>' + v + '</' + tag + '>\n'; });
-            chunkStr += '  </record>\n';
+      try { // fix: wrap writes to ensure cleanup on error
+        if (fmt === 'csv' || fmt === 'tsv') {
+          const sep = fmt === 'csv' ? ',' : '\t';
+          await writable.write(rowToCSV(headers, sep));
+          for (let i = 0; i < totalRows; i += chunkSize) {
+            const chunk = rows.slice(i, i + chunkSize);
+            let chunkStr = '';
+            for (const row of chunk) chunkStr += rowToCSV(row, sep);
+            await writable.write(chunkStr);
+            onProgress(Math.min(100, Math.round((i + chunkSize) / totalRows * 100)), `Writing rows ${i + 1}-${Math.min(i + chunkSize, totalRows)} of ${totalRows}...`);
           }
-          await writable.write(chunkStr);
-          onProgress(Math.min(100, Math.round((i + chunkSize) / totalRows * 100)), `Writing rows ${i + 1}-${Math.min(i + chunkSize, totalRows)} of ${totalRows}...`);
+        } else if (fmt === 'jsonl') {
+          for (let i = 0; i < totalRows; i += chunkSize) {
+            const chunk = rows.slice(i, i + chunkSize);
+            let chunkStr = '';
+            for (const row of chunk) { const obj = {}; headers.forEach((h, j) => obj[h] = row[j] ?? ''); chunkStr += JSON.stringify(obj) + '\n'; }
+            await writable.write(chunkStr);
+            onProgress(Math.min(100, Math.round((i + chunkSize) / totalRows * 100)), `Writing rows ${i + 1}-${Math.min(i + chunkSize, totalRows)} of ${totalRows}...`);
+          }
+        } else if (fmt === 'json') {
+          await writable.write('[\n');
+          let first = true;
+          for (let i = 0; i < totalRows; i += chunkSize) {
+            const chunk = rows.slice(i, i + chunkSize);
+            let chunkStr = '';
+            for (const row of chunk) { const obj = {}; headers.forEach((h, j) => obj[h] = row[j] ?? ''); chunkStr += (first ? '' : ',\n') + JSON.stringify(obj); first = false; }
+            await writable.write(chunkStr);
+            onProgress(Math.min(100, Math.round((i + chunkSize) / totalRows * 100)), `Writing rows ${i + 1}-${Math.min(i + chunkSize, totalRows)} of ${totalRows}...`);
+          }
+          await writable.write('\n]');
+        } else if (fmt === 'xml') {
+          await writable.write('<?xml version="1.0" encoding="UTF-8"?>\n<records>\n');
+          for (let i = 0; i < totalRows; i += chunkSize) {
+            const chunk = rows.slice(i, i + chunkSize);
+            let chunkStr = '';
+            for (const row of chunk) {
+              chunkStr += '  <record>\n';
+              headers.forEach((h, j) => { const tag = String(h).replace(/[^a-zA-Z0-9_]/g, '_').replace(/^(\d)/, '_$1'); const v = String(row[j] ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); chunkStr += '    <' + tag + '>' + v + '</' + tag + '>\n'; });
+              chunkStr += '  </record>\n';
+            }
+            await writable.write(chunkStr);
+            onProgress(Math.min(100, Math.round((i + chunkSize) / totalRows * 100)), `Writing rows ${i + 1}-${Math.min(i + chunkSize, totalRows)} of ${totalRows}...`);
+          }
+          await writable.write('</records>');
+        } else if (fmt === 'sql') {
+          const tbl = outputName.replace(/[^a-zA-Z0-9_]/g, '_');
+          const cols = headers.map(h => '"' + String(h).replace(/"/g, '""') + '"');
+          await writable.write('-- DataForge\n-- Table: ' + tbl + '\n\n');
+          for (let i = 0; i < totalRows; i += chunkSize) {
+            const chunk = rows.slice(i, i + chunkSize);
+            let chunkStr = '';
+            for (const row of chunk) { const vals = headers.map((_, j) => { const v = row[j]; if (v == null || v === '') return 'NULL'; if (typeof v === 'number') return v; return "'" + String(v).replace(/'/g, "''") + "'"; }); chunkStr += 'INSERT INTO "' + tbl + '" (' + cols.join(', ') + ') VALUES (' + vals.join(', ') + ');\n'; }
+            await writable.write(chunkStr);
+            onProgress(Math.min(100, Math.round((i + chunkSize) / totalRows * 100)), `Writing rows ${i + 1}-${Math.min(i + chunkSize, totalRows)} of ${totalRows}...`);
+          }
+        } else if (fmt === 'md') {
+          await writable.write('| ' + headers.join(' | ') + ' |\n| ' + headers.map(() => '---').join(' | ') + ' |\n');
+          for (let i = 0; i < totalRows; i += chunkSize) {
+            const chunk = rows.slice(i, i + chunkSize);
+            let chunkStr = '';
+            for (const row of chunk) chunkStr += '| ' + headers.map((_, j) => String(row[j] ?? '').replace(/\|/g, '\\|')).join(' | ') + ' |\n';
+            await writable.write(chunkStr);
+            onProgress(Math.min(100, Math.round((i + chunkSize) / totalRows * 100)), `Writing rows ${i + 1}-${Math.min(i + chunkSize, totalRows)} of ${totalRows}...`);
+          }
         }
-        await writable.write('</records>');
-      } else if (fmt === 'sql') {
-        const tbl = outputName.replace(/[^a-zA-Z0-9_]/g, '_');
-        const cols = headers.map(h => '"' + String(h).replace(/"/g, '""') + '"');
-        await writable.write('-- DataForge\n-- Table: ' + tbl + '\n\n');
-        for (let i = 0; i < totalRows; i += chunkSize) {
-          const chunk = rows.slice(i, i + chunkSize);
-          let chunkStr = '';
-          for (const row of chunk) { const vals = headers.map((_, j) => { const v = row[j]; if (v == null || v === '') return 'NULL'; if (typeof v === 'number') return v; return "'" + String(v).replace(/'/g, "''") + "'"; }); chunkStr += 'INSERT INTO "' + tbl + '" (' + cols.join(', ') + ') VALUES (' + vals.join(', ') + ');\n'; }
-          await writable.write(chunkStr);
-          onProgress(Math.min(100, Math.round((i + chunkSize) / totalRows * 100)), `Writing rows ${i + 1}-${Math.min(i + chunkSize, totalRows)} of ${totalRows}...`);
-        }
-      } else if (fmt === 'md') {
-        await writable.write('| ' + headers.join(' | ') + ' |\n| ' + headers.map(() => '---').join(' | ') + ' |\n');
-        for (let i = 0; i < totalRows; i += chunkSize) {
-          const chunk = rows.slice(i, i + chunkSize);
-          let chunkStr = '';
-          for (const row of chunk) chunkStr += '| ' + headers.map((_, j) => String(row[j] ?? '').replace(/\|/g, '\\|')).join(' | ') + ' |\n';
-          await writable.write(chunkStr);
-          onProgress(Math.min(100, Math.round((i + chunkSize) / totalRows * 100)), `Writing rows ${i + 1}-${Math.min(i + chunkSize, totalRows)} of ${totalRows}...`);
-        }
-      }
 
-      await writable.close();
-      return null; // Signal that file was saved directly
+        await writable.close(); // fix: ensure close on success
+        return null;
+      } catch (writeErr) {
+        await writable.abort(); // fix: release handle on failure
+        throw writeErr;
+      }
     } catch (err) {
       if (err.name === 'AbortError') throw new Error('File save cancelled');
       throw err;
@@ -1240,6 +1249,7 @@ const DBC = (function() {
         const zip = new JSZip();
         const summary = [];
         let ok = 0;
+        let savedDirectly = 0; // fix: track files saved via File System API
 
         for (let fi = 0; fi < files.length; fi++) {
           const f = files[fi];
@@ -1257,7 +1267,12 @@ const DBC = (function() {
               addResult(false, 'info', null, `${f.name}: ${data.rows.length.toLocaleString()} rows → ${tier.name} mode`);
             }
 
-            const result = await generateOutput(data.headers, data.rows, fmt, base(f.name), showProgress);
+            const fileBase = (fi / files.length) * 100; // fix: global progress offset
+            const fileShare = (1 / files.length) * 100;
+            const result = await generateOutput(
+              data.headers, data.rows, fmt, base(f.name),
+              (pct, msg) => showProgress(fileBase + (pct / 100) * fileShare, `[${fi + 1}/${files.length}] ${msg}`) // fix: show "file N of M"
+            );
 
             if (result !== null) {
               if (result.split) {
@@ -1271,9 +1286,11 @@ const DBC = (function() {
                 zip.file(base(f.name) + '.' + fmt, result);
                 summary.push({ input: f.name, output: base(f.name) + '.' + fmt, status: 'ok', rows: data.rows.length, cols: data.headers.length });
               }
+              ok++; // fix: only count files actually added to ZIP
+            } else {
+              savedDirectly++; // fix: track files saved via File System API
             }
 
-            ok++;
             if (result && result.split) {
               addResult(true, f.name, result.numParts + ' XLSX files', data.rows.length + ' rows (split into 50K each)');
             } else {
@@ -1315,12 +1332,12 @@ const DBC = (function() {
     const d = document.createElement('div');
     if (from === 'info' || from === 'warning') {
       d.className = 'result-item info';
-      d.innerHTML = '<span class="result-icon">ℹ</span><span>' + detail + '</span>';
+      d.innerHTML = '<span class="result-icon">ℹ</span><span>' + escHtml(detail) + '</span>'; // fix: XSS
     } else {
       d.className = 'result-item ' + (ok ? 'success' : 'error');
       d.innerHTML = ok
-        ? '<span class="result-icon">&#10003;</span><span class="result-from">' + from + '</span><span class="result-arrow">&rarr;</span><span class="result-to">' + to + '</span><span class="result-meta">' + detail + '</span>'
-        : '<span class="result-icon">&#10007;</span><span class="result-from">' + from + '</span><span class="result-error-msg" title="' + detail + '">' + detail + '</span>';
+        ? '<span class="result-icon">&#10003;</span><span class="result-from">' + escHtml(from) + '</span><span class="result-arrow">&rarr;</span><span class="result-to">' + escHtml(to) + '</span><span class="result-meta">' + escHtml(detail) + '</span>' // fix: XSS
+        : '<span class="result-icon">&#10007;</span><span class="result-from">' + escHtml(from) + '</span><span class="result-error-msg" title="' + escHtml(detail) + '">' + escHtml(detail) + '</span>'; // fix: XSS
     }
     resultsEl.appendChild(d);
   }
