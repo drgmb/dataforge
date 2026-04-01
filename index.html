@@ -902,9 +902,9 @@ const DBC = (function() {
         throw new Error('XLSX format limited to 1,048,575 rows. Use CSV for larger datasets.');
       }
 
-      // For very large datasets, recommend CSV
-      if (totalRows > 200000) {
-        throw new Error('XLSX with ' + totalRows.toLocaleString() + ' rows may cause browser memory issues. Use CSV format for datasets over 200K rows.');
+      // XLSX creates a cell object for each cell - browsers struggle with >100K rows
+      if (totalRows > 100000) {
+        throw new Error('XLSX limited to 100,000 rows in browser. Use CSV for ' + totalRows.toLocaleString() + ' rows.');
       }
 
       onProgress(5, 'Creating XLSX worksheet...');
