@@ -895,10 +895,85 @@ const DBC = (function() {
       return new Blob(parts, { type: 'text/markdown' });
     }
 
-    // For xlsx and dbf, we need to use direct method (they don't stream well)
-    onProgress(50, 'Generating ' + fmt.toUpperCase() + ' file...');
-    await yieldToUI();
-    return generateOutputDirect(headers, rows, fmt, outputName);
+    // XLSX: Use aoa_to_sheet with pre-built array (avoids spread operator)
+    if (fmt === 'xlsx') {
+      // XLSX has a limit of 1,048,576 rows
+      if (totalRows > 1048575) {
+        throw new Error('XLSX format limited to 1,048,575 rows. Use CSV for larger datasets.');
+      }
+
+      onProgress(10, 'Building XLSX data array...');
+      await yieldToUI();
+
+      // Build the AOA (array of arrays) incrementally
+      const aoa = [headers];
+
+      for (let i = 0; i < totalRows; i += chunkSize) {
+        const end = Math.min(i + chunkSize, totalRows);
+        for (let ri = i; ri < end; ri++) {
+          aoa.push(rows[ri]);
+        }
+        onProgress(10 + Math.round((i / totalRows) * 50), `Preparing rows ${i + 1}-${end} of ${totalRows}...`);
+        await yieldToUI();
+      }
+
+      onProgress(65, 'Creating XLSX worksheet...');
+      await yieldToUI();
+
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+
+      onProgress(80, 'Generating XLSX file...');
+      await yieldToUI();
+
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+      const b = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+
+      // Clear aoa to free memory
+      aoa.length = 0;
+
+      return new Blob([b], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    }
+
+    // DBF: Build records incrementally
+    if (fmt === 'dbf') {
+      // DBF practical limit ~1M rows due to memory constraints
+      if (totalRows > 1000000) {
+        throw new Error('DBF format limited to ~1M rows for performance. Use CSV for larger datasets.');
+      }
+
+      onProgress(10, 'Building DBF records...');
+      await yieldToUI();
+
+      // Build records using simple object creation
+      const recs = new Array(totalRows);
+
+      for (let i = 0; i < totalRows; i += chunkSize) {
+        const end = Math.min(i + chunkSize, totalRows);
+        for (let ri = i; ri < end; ri++) {
+          const row = rows[ri];
+          const obj = {};
+          for (let c = 0; c < headers.length; c++) {
+            obj[headers[c]] = row[c] ?? '';
+          }
+          recs[ri] = obj;
+        }
+        onProgress(10 + Math.round((i / totalRows) * 60), `Processing rows ${i + 1}-${end} of ${totalRows}...`);
+        await yieldToUI();
+      }
+
+      onProgress(75, 'Generating DBF file...');
+      await yieldToUI();
+
+      const result = new Blob([DBF.write(recs)], { type: 'application/x-dbf' });
+
+      // Clear recs to free memory
+      recs.length = 0;
+
+      return result;
+    }
+
+    throw new Error('Unsupported format: ' + fmt);
   }
 
   // Tier 4: File System API (very large datasets)
