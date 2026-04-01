@@ -895,50 +895,69 @@ const DBC = (function() {
       return new Blob(parts, { type: 'text/markdown' });
     }
 
-    // XLSX: Build worksheet incrementally using sheet_add_aoa
+    // XLSX: Split into 50K row files to avoid browser memory issues
     if (fmt === 'xlsx') {
-      // XLSX has a limit of 1,048,576 rows (plus header)
-      if (totalRows > 1048575) {
-        throw new Error('XLSX format limited to 1,048,575 rows. Use CSV for larger datasets.');
-      }
+      const XLSX_MAX_ROWS = 50000;
 
-      // XLSX creates a cell object for each cell - browsers struggle with >100K rows
-      if (totalRows > 100000) {
-        throw new Error('XLSX limited to 100,000 rows in browser. Use CSV for ' + totalRows.toLocaleString() + ' rows.');
-      }
-
-      onProgress(5, 'Creating XLSX worksheet...');
-      await yieldToUI();
-
-      // Create worksheet with headers first
-      const ws = XLSX.utils.aoa_to_sheet([headers]);
-
-      // Add data in chunks using sheet_add_aoa (starts at row 1, after header)
-      const xlsxChunkSize = Math.min(chunkSize, 2000); // Smaller chunks for XLSX
-
-      for (let i = 0; i < totalRows; i += xlsxChunkSize) {
-        const end = Math.min(i + xlsxChunkSize, totalRows);
-        const chunk = rows.slice(i, end);
-
-        // sheet_add_aoa appends at specified origin
-        XLSX.utils.sheet_add_aoa(ws, chunk, { origin: i + 1 }); // +1 because row 0 is headers
-
-        onProgress(5 + Math.round((i / totalRows) * 70), `Adding rows ${i + 1}-${end} of ${totalRows}...`);
+      // Single file if <= 50K rows
+      if (totalRows <= XLSX_MAX_ROWS) {
+        onProgress(5, 'Creating XLSX worksheet...');
         await yieldToUI();
+
+        const ws = XLSX.utils.aoa_to_sheet([headers]);
+        const xlsxChunkSize = Math.min(chunkSize, 2000);
+
+        for (let i = 0; i < totalRows; i += xlsxChunkSize) {
+          const end = Math.min(i + xlsxChunkSize, totalRows);
+          XLSX.utils.sheet_add_aoa(ws, rows.slice(i, end), { origin: i + 1 });
+          onProgress(5 + Math.round((i / totalRows) * 70), `Adding rows ${i + 1}-${end}...`);
+          await yieldToUI();
+        }
+
+        onProgress(85, 'Generating XLSX...');
+        await yieldToUI();
+
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+        const b = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+
+        return new Blob([b], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
       }
 
-      onProgress(80, 'Generating XLSX file...');
-      await yieldToUI();
+      // Multiple files for > 50K rows
+      const numParts = Math.ceil(totalRows / XLSX_MAX_ROWS);
+      const xlsxParts = [];
 
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+      for (let part = 0; part < numParts; part++) {
+        const startRow = part * XLSX_MAX_ROWS;
+        const endRow = Math.min(startRow + XLSX_MAX_ROWS, totalRows);
+        const partRows = rows.slice(startRow, endRow);
 
-      onProgress(90, 'Compressing XLSX...');
-      await yieldToUI();
+        onProgress(Math.round((part / numParts) * 90), `Creating XLSX part ${part + 1}/${numParts} (rows ${startRow + 1}-${endRow})...`);
+        await yieldToUI();
 
-      const b = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+        const ws = XLSX.utils.aoa_to_sheet([headers]);
+        const xlsxChunkSize = 2000;
 
-      return new Blob([b], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        for (let i = 0; i < partRows.length; i += xlsxChunkSize) {
+          const end = Math.min(i + xlsxChunkSize, partRows.length);
+          XLSX.utils.sheet_add_aoa(ws, partRows.slice(i, end), { origin: i + 1 });
+          await yieldToUI();
+        }
+
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+        const b = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+
+        xlsxParts.push({
+          name: outputName + '_part' + (part + 1) + '.xlsx',
+          blob: new Blob([b], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }),
+          rows: partRows.length
+        });
+      }
+
+      // Return array of parts (caller must handle this)
+      return { split: true, parts: xlsxParts, totalRows, numParts };
     }
 
     // DBF: Build records incrementally
@@ -1170,9 +1189,9 @@ const DBC = (function() {
         const tier = getTier(allRows.length);
         addResult(false, 'info', null, `${allRows.length.toLocaleString()} rows total → ${tier.name} mode`);
 
-        const blob = await generateOutput(outHeaders, allRows, fmt, 'merged', showProgress);
+        const result = await generateOutput(outHeaders, allRows, fmt, 'merged', showProgress);
 
-        if (blob === null) {
+        if (result === null) {
           // File was saved directly via File System API
           addResult(true, files.length + ' files', 'merged.' + fmt + ' (saved)', allRows.length + ' rows');
         } else {
@@ -1181,11 +1200,22 @@ const DBC = (function() {
           await yieldToUI();
 
           const zip = new JSZip();
-          zip.file('merged.' + fmt, blob);
+
+          // Handle split XLSX (multiple files)
+          if (result.split) {
+            addResult(false, 'info', null, `XLSX split into ${result.numParts} files (50K rows each) due to browser memory limits`);
+            for (const part of result.parts) {
+              zip.file(part.name, part.blob);
+            }
+          } else {
+            zip.file('merged.' + fmt, result);
+          }
 
           const colMapping = {};
           for (const m of mergeMapping) colMapping[m.outputCol] = Object.assign({}, m.sources);
-          zip.file('conversion_summary.json', JSON.stringify({ generated: new Date().toISOString(), mode: 'merge', target_format: fmt, column_mapping: colMapping, files: fileSummary, total_rows: allRows.length }, null, 2));
+          const summaryData = { generated: new Date().toISOString(), mode: 'merge', target_format: fmt, column_mapping: colMapping, files: fileSummary, total_rows: allRows.length };
+          if (result.split) summaryData.xlsx_split_into = result.numParts + ' files (50K rows per file)';
+          zip.file('conversion_summary.json', JSON.stringify(summaryData, null, 2));
 
           const zipBlob = await zip.generateAsync({ type: 'blob' });
           const url = URL.createObjectURL(zipBlob);
@@ -1198,7 +1228,11 @@ const DBC = (function() {
           document.body.removeChild(a);
           setTimeout(() => URL.revokeObjectURL(url), 5000);
 
-          addResult(true, files.length + ' files', 'merged.' + fmt, allRows.length + ' rows, ' + outHeaders.length + ' cols');
+          if (result.split) {
+            addResult(true, files.length + ' files', result.numParts + ' XLSX files', allRows.length + ' rows (split into 50K each)');
+          } else {
+            addResult(true, files.length + ' files', 'merged.' + fmt, allRows.length + ' rows, ' + outHeaders.length + ' cols');
+          }
         }
 
       } else {
@@ -1223,15 +1257,28 @@ const DBC = (function() {
               addResult(false, 'info', null, `${f.name}: ${data.rows.length.toLocaleString()} rows → ${tier.name} mode`);
             }
 
-            const blob = await generateOutput(data.headers, data.rows, fmt, base(f.name), showProgress);
+            const result = await generateOutput(data.headers, data.rows, fmt, base(f.name), showProgress);
 
-            if (blob !== null) {
-              zip.file(base(f.name) + '.' + fmt, blob);
+            if (result !== null) {
+              if (result.split) {
+                // Handle split XLSX (multiple files)
+                addResult(false, 'info', null, `${f.name}: Split into ${result.numParts} XLSX files (50K rows each)`);
+                for (const part of result.parts) {
+                  zip.file(part.name, part.blob);
+                }
+                summary.push({ input: f.name, output: result.numParts + ' XLSX files', status: 'ok', rows: data.rows.length, cols: data.headers.length, split: true });
+              } else {
+                zip.file(base(f.name) + '.' + fmt, result);
+                summary.push({ input: f.name, output: base(f.name) + '.' + fmt, status: 'ok', rows: data.rows.length, cols: data.headers.length });
+              }
             }
 
-            summary.push({ input: f.name, output: base(f.name) + '.' + fmt, status: 'ok', rows: data.rows.length, cols: data.headers.length });
             ok++;
-            addResult(true, f.name, base(f.name) + '.' + fmt, data.rows.length + ' rows, ' + data.headers.length + ' cols');
+            if (result && result.split) {
+              addResult(true, f.name, result.numParts + ' XLSX files', data.rows.length + ' rows (split into 50K each)');
+            } else {
+              addResult(true, f.name, base(f.name) + '.' + fmt, data.rows.length + ' rows, ' + data.headers.length + ' cols');
+            }
           } catch (err) {
             const msg = err.message || 'Unknown error';
             summary.push({ input: f.name, output: null, status: 'error', error: msg });
